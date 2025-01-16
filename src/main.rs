@@ -7,30 +7,18 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let mut buf: String = String::new();
-                stream.read_to_string(&mut buf).unwrap();
+                let mut buf = [0; 4];
 
-                for _ in 0..count_ping(buf) {
-                    stream.write(b"+PONG\r\n").unwrap();
+                while let Ok(_) = stream.read(&mut buf) {
+                    if buf == *b"PING" {
+                        stream.write_all(b"+PONG\r\n").unwrap();
+                    }
+                    buf = [0; 4];
                 }
-
-                stream.flush().unwrap();
             }
             Err(e) => {
                 println!("error: {}", e);
             }
         }
     }
-}
-
-fn count_ping(buf: String) -> usize {
-    let mut count: usize = 0;
-
-    for word in buf.split('\n') {
-        if word == "PING" {
-            count += 1;
-        }
-    }
-
-    count
 }
