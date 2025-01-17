@@ -5,6 +5,7 @@ const TERM: &[u8] = b"\r\n";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resp {
     String(String),
+    Integer(i64),
     BulkString(String),
     NullBulkString,
     Array(Vec<Resp>),
@@ -17,6 +18,9 @@ impl Resp {
         if token.starts_with(b"+") {
             let val = std::str::from_utf8(&token[1..]).unwrap();
             Self::String(val.into())
+        } else if token.starts_with(b":") {
+            let val: i64 = std::str::from_utf8(&token[1..]).unwrap().parse().unwrap();
+            Self::Integer(val)
         } else if token == b"$-1" {
             Self::NullBulkString
         } else if token.starts_with(b"$") {
@@ -47,6 +51,7 @@ impl Resp {
     pub fn serialize(self) -> Vec<u8> {
         match self {
             Self::String(val) => format!("+{val}\r\n").into_bytes(),
+            Self::Integer(val) => format!(":{val}\r\n").into_bytes(),
             Self::BulkString(val) => format!("${}\r\n{val}\r\n", val.len()).into_bytes(),
             Self::NullBulkString => "$-1\r\n".to_string().into_bytes(),
             Self::Array(vals) => {

@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
@@ -44,9 +45,22 @@ fn main() {
                                     .serialize();
                                 stream.write_all(&val).unwrap();
                             }
-                            Command::Set { key, value } => {
-                                let mut store = store.lock().unwrap();
-                                store.insert(key, value);
+                            Command::Set { key, value, exp } => {
+                                {
+                                    let mut store = store.lock().unwrap();
+                                    store.insert(key.clone(), value);
+                                }
+
+                                if let Some(exp) = exp {
+                                    let store = Arc::clone(&store);
+
+                                    thread::spawn(move || {
+                                        thread::sleep(Duration::from_millis(exp));
+                                        let mut store = store.lock().unwrap();
+                                        store.remove(&key);
+                                    });
+                                }
+
                                 let val = Resp::String("OK".into()).serialize();
                                 stream.write_all(&val).unwrap();
                             }
@@ -68,8 +82,14 @@ fn main() {
 enum Command {
     Ping,
     Echo(String),
-    Get { key: String },
-    Set { key: String, value: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: String,
+        exp: Option<u64>,
+    },
     Unknown,
 }
 
@@ -95,8 +115,18 @@ impl Command {
                         let key = bulk_string(&mut elements);
                         let value = bulk_string(&mut elements);
 
+                        let exp = if let Some(px) = bulk_string(&mut elements) {
+                            if px.to_uppercase().as_str() == "PX" {
+                                bulk_string(&mut elements).and_then(|v| v.parse::<u64>().ok())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
                         if let (Some(key), Some(value)) = (key, value) {
-                            Self::Set { key, value }
+                            Self::Set { key, value, exp }
                         } else {
                             Self::Unknown
                         }
