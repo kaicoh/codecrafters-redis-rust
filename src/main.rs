@@ -1,15 +1,21 @@
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::net::TcpListener;
-use std::thread;
+mod resp;
 
-const TERM: &[u8] = b"\r\n";
+use resp::Resp;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let store: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
+                let store = Arc::clone(&store);
+
                 thread::spawn(move || {
                     let mut buf = [0; 1024];
 
@@ -26,6 +32,22 @@ fn main() {
                             }
                             Command::Echo(arg) => {
                                 let val = Resp::String(arg).serialize();
+                                stream.write_all(&val).unwrap();
+                            }
+                            Command::Get { key } => {
+                                let val = store
+                                    .lock()
+                                    .unwrap()
+                                    .get(&key)
+                                    .map(|v| Resp::BulkString(v.into()))
+                                    .unwrap_or(Resp::NullBulkString)
+                                    .serialize();
+                                stream.write_all(&val).unwrap();
+                            }
+                            Command::Set { key, value } => {
+                                let mut store = store.lock().unwrap();
+                                store.insert(key, value);
+                                let val = Resp::String("OK".into()).serialize();
                                 stream.write_all(&val).unwrap();
                             }
                             _ => {}
@@ -46,6 +68,8 @@ fn main() {
 enum Command {
     Ping,
     Echo(String),
+    Get { key: String },
+    Set { key: String, value: String },
     Unknown,
 }
 
@@ -61,9 +85,18 @@ impl Command {
             match elements.next() {
                 Some(Resp::BulkString(cmd)) => match cmd.to_uppercase().as_str() {
                     "PING" => Self::Ping,
-                    "ECHO" => {
-                        if let Some(Resp::BulkString(val)) = elements.next() {
-                            Self::Echo(val)
+                    "ECHO" => bulk_string(&mut elements)
+                        .map(Self::Echo)
+                        .unwrap_or(Self::Unknown),
+                    "GET" => bulk_string(&mut elements)
+                        .map(|key| Self::Get { key })
+                        .unwrap_or(Self::Unknown),
+                    "SET" => {
+                        let key = bulk_string(&mut elements);
+                        let value = bulk_string(&mut elements);
+
+                        if let (Some(key), Some(value)) = (key, value) {
+                            Self::Set { key, value }
                         } else {
                             Self::Unknown
                         }
@@ -78,100 +111,10 @@ impl Command {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Resp {
-    String(String),
-    BulkString(String),
-    Array(Vec<Resp>),
-}
-
-impl Resp {
-    fn new(tokens: &mut RespToken<'_>) -> Self {
-        let token = tokens.next().unwrap();
-
-        if token.starts_with(b"+") {
-            let val = std::str::from_utf8(&token[1..]).unwrap();
-            Self::String(val.into())
-        } else if token.starts_with(b"$") {
-            let len: usize = std::str::from_utf8(&token[1..]).unwrap().parse().unwrap();
-            let val_token = tokens.next().unwrap();
-            let val = std::str::from_utf8(&val_token[..len]).unwrap();
-            Self::BulkString(val.into())
-        } else if token.starts_with(b"*") {
-            let len: usize = std::str::from_utf8(&token[1..]).unwrap().parse().unwrap();
-            let mut inner: Vec<Self> = vec![];
-
-            for _ in 0..len {
-                let element = Self::new(tokens);
-                inner.push(element);
-            }
-
-            Self::Array(inner)
-        } else {
-            unimplemented!()
-        }
-    }
-
-    fn parse(buf: &[u8]) -> Self {
-        let mut tokens = RespToken::new(buf);
-        Self::new(&mut tokens)
-    }
-
-    fn serialize(self) -> Vec<u8> {
-        match self {
-            Self::String(val) => format!("+{val}\r\n").into_bytes(),
-            Self::BulkString(val) => format!("${}\r\n{val}\r\n", val.len()).into_bytes(),
-            Self::Array(vals) => {
-                let len = vals.len();
-                let elements = vals.into_iter().flat_map(Self::serialize);
-                format!("*{len}\r\n")
-                    .into_bytes()
-                    .into_iter()
-                    .chain(elements)
-                    .collect()
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct RespToken<'a> {
-    cursor: Cursor<&'a [u8]>,
-}
-
-impl<'a> RespToken<'a> {
-    fn new(buf: &'a [u8]) -> Self {
-        Self {
-            cursor: Cursor::new(buf),
-        }
-    }
-}
-
-impl<'a> Iterator for RespToken<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current_pos = self.cursor.position() as usize;
-        let bytes = *(self.cursor.get_ref());
-
-        let (_, rest) = bytes.split_at_checked(current_pos)?;
-
-        if rest.is_empty() {
-            return None;
-        }
-
-        let msg_size = rest.windows(2).position(|chars| chars == TERM)?;
-
-        let next_pos: i64 = (msg_size + 2)
-            .try_into()
-            .inspect_err(|e| eprintln!("Error! parsing new position: {e}"))
-            .ok()?;
-
-        self.cursor
-            .seek(SeekFrom::Current(next_pos))
-            .inspect_err(|e| eprintln!("Error! seeking next position: {e}"))
-            .ok()?;
-
-        Some(&bytes[current_pos..(current_pos + msg_size)])
+fn bulk_string(elements: &mut impl Iterator<Item = Resp>) -> Option<String> {
+    if let Some(Resp::BulkString(val)) = elements.next() {
+        Some(val)
+    } else {
+        None
     }
 }
