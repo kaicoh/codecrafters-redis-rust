@@ -1,4 +1,4 @@
-use super::{RedisError, RedisResult, Resp, Store};
+use super::{Config, RedisError, RedisResult, Resp, Store};
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
@@ -12,6 +12,7 @@ pub enum Command {
         value: String,
         exp: Option<u64>,
     },
+    ConfigGet(String),
     Unknown,
 }
 
@@ -25,7 +26,7 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Store) -> RedisResult<Resp> {
+    pub fn run(self, store: Store, config: Config) -> RedisResult<Resp> {
         let res = match self {
             Self::Ping => Resp::SS("PONG".into()),
             Self::Echo(val) => Resp::BS(Some(val)),
@@ -35,6 +36,18 @@ impl Command {
                 .unwrap_or(Resp::BS(None)),
             Self::Set { key, value, exp } => {
                 store.set(&key, value, exp).map(|_| Resp::SS("OK".into()))?
+            }
+            Self::ConfigGet(key) => {
+                let val = match key.as_str() {
+                    "dir" => config.dir()?,
+                    "dbfilename" => config.dbfilename()?,
+                    _ => None,
+                };
+
+                Resp::A(vec![
+                    Resp::BS(Some(key)),
+                    val.map(|v| Resp::BS(Some(v))).unwrap_or(Resp::BS(None)),
+                ])
             }
             _ => {
                 return Err(RedisError::UnknownCommand);
@@ -81,7 +94,17 @@ impl Command {
                         .and_then(|v| v.parse::<u64>().ok());
                     Self::Set { key, value, exp }
                 }
-                _ => unimplemented!(),
+                "CONFIG" => match args.get(1) {
+                    Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
+                        let key = args
+                            .get(2)
+                            .cloned()
+                            .ok_or(RedisError::LackOfArgs { need: 1, got: 0 })?;
+                        Self::ConfigGet(key)
+                    }
+                    _ => Self::Unknown,
+                },
+                _ => Self::Unknown,
             }
         } else {
             Self::Unknown
@@ -159,6 +182,14 @@ mod tests {
             value: "bar".into(),
             exp: Some(100),
         };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_config_get_command() {
+        let args = vec!["CONFIG".to_string(), "GET".to_string(), "foo".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::ConfigGet("foo".into());
         assert_eq!(cmd, expected);
     }
 }
