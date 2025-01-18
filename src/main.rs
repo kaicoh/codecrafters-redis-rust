@@ -19,19 +19,21 @@ fn main() {
                     while stream.read(&mut buf).is_ok() {
                         let msg = trim_trailing_zero(&buf);
 
-                        let res = match Command::new(msg) {
-                            Ok(cmd) => cmd.run(store.clone()).unwrap_or_else(|err| {
-                                eprintln!("Failed to run command: {err}");
-                                Resp::from(err)
-                            }),
-                            Err(err) => {
-                                eprintln!("Failed to parse command: {err}");
-                                Resp::from(err)
-                            }
-                        };
+                        if !msg.is_empty() {
+                            let res = match Command::new(msg) {
+                                Ok(cmd) => cmd.run(store.clone()).unwrap_or_else(|err| {
+                                    eprintln!("Failed to run command: {err}");
+                                    Resp::from(err)
+                                }),
+                                Err(err) => {
+                                    eprintln!("Failed to parse command: {err}");
+                                    Resp::from(err)
+                                }
+                            };
 
-                        if let Err(err) = stream.write_all(&res.serialize()) {
-                            eprintln!("Failed to write stream: {err}");
+                            if let Err(err) = stream.write_all(&res.serialize()) {
+                                eprintln!("Failed to write TCP stream: {err}");
+                            }
                         }
 
                         buf = [0; 1024];
