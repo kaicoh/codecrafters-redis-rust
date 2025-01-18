@@ -31,7 +31,7 @@ impl Resp {
             Self::BS(None) => format!("$-1{TERM}").into_bytes(),
             Self::A(vals) => {
                 let len = vals.len();
-                let elements = vals.into_iter().flat_map(Self::serialize);
+                let elements = vals.iter().flat_map(Self::serialize);
                 format!("*{len}{TERM}")
                     .into_bytes()
                     .into_iter()

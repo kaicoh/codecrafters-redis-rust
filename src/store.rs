@@ -53,3 +53,9 @@ impl Store {
             .map_err(|e| RedisError::Lock(format!("{e}")))
     }
 }
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
+}

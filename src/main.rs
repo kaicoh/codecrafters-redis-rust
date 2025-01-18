@@ -48,6 +48,6 @@ fn main() {
 fn trim_trailing_zero(buf: &[u8]) -> &[u8] {
     match buf.iter().position(|&v| v == 0) {
         Some(pos) => &buf[..pos],
-        None => &buf[..],
+        None => buf,
     }
 }
