@@ -61,7 +61,7 @@ impl Command {
             ),
             Self::Info => {
                 let role = store.role()?;
-                Resp::BS(Some(format!("role:{role}")))
+                Resp::BS(Some(format!("role:{role}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")))
             }
             _ => {
                 return Err(RedisError::UnknownCommand);
