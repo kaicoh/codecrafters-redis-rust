@@ -43,6 +43,14 @@ fn connect_master(config: &Config) -> io::Result<()> {
             Resp::BS(Some("psync2".into())),
         ]);
         send_to_master(&mut stream, msg)?;
+
+        // Send PSYNC
+        let msg = Resp::A(vec![
+            Resp::BS(Some("PSYNC".into())),
+            Resp::BS(Some("?".into())),
+            Resp::BS(Some("-1".into())),
+        ]);
+        send_to_master(&mut stream, msg)?;
     }
     Ok(())
 }
