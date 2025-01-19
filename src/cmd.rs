@@ -1,6 +1,9 @@
 use super::{RedisError, RedisResult, Resp, Store};
 use std::sync::Arc;
 
+const REPLICATION_ID: &str = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+const REPLICATION_OFFSET: &str = "0";
+
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Ping,
@@ -17,6 +20,7 @@ pub enum Command {
     Keys,
     Info,
     ReplConf,
+    Psync,
     Unknown,
 }
 
@@ -62,9 +66,10 @@ impl Command {
             ),
             Self::Info => {
                 let role = store.role()?;
-                Resp::BS(Some(format!("role:{role}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")))
+                Resp::BS(Some(format!("role:{role}\r\nmaster_repl_offset:{REPLICATION_OFFSET}\r\nmaster_replid:{REPLICATION_ID}")))
             }
             Self::ReplConf => Resp::SS("OK".into()),
+            Self::Psync => Resp::SS(format!("FULLRESYNC {REPLICATION_ID} {REPLICATION_OFFSET}")),
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
@@ -123,6 +128,7 @@ impl Command {
                 "KEYS" => Self::Keys,
                 "INFO" => Self::Info,
                 "REPLCONF" => Self::ReplConf,
+                "PSYNC" => Self::Psync,
                 _ => Self::Unknown,
             }
         } else {
