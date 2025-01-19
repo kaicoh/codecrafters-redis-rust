@@ -16,7 +16,9 @@ pub struct Rdb {
 
 impl Rdb {
     pub fn new(config: Config) -> RedisResult<Self> {
-        let Config { dir, dbfilename } = config;
+        let Config {
+            dir, dbfilename, ..
+        } = config;
         let mut rdb = Self {
             dir,
             dbfilename,

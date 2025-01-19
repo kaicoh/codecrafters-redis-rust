@@ -7,10 +7,11 @@ use std::sync::Arc;
 use std::thread;
 
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-
     let args: Vec<String> = env::args().collect();
     let config = Config::new(args);
+
+    let listener = TcpListener::bind(config.socket_addr()).unwrap();
+
     let store = Arc::new(
         Store::new(config)
             .inspect_err(|err| eprintln!("Failed to instantiate store: {err}"))
