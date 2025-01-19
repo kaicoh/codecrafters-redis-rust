@@ -2,6 +2,7 @@ mod iterator;
 
 use super::{utils, RedisError, RedisResult};
 use iterator::RespToken;
+use std::fmt;
 
 const TERM: &str = "\r\n";
 
@@ -15,6 +16,25 @@ pub enum Resp {
     BS(Option<String>),
     /// Array
     A(Vec<Resp>),
+}
+
+impl fmt::Display for Resp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SS(val) => write!(f, "{val}"),
+            Self::SE(val) => write!(f, "{val}"),
+            Self::BS(Some(val)) => write!(f, "{val}"),
+            Self::BS(None) => write!(f, ""),
+            Self::A(els) => {
+                let els = els
+                    .iter()
+                    .map(|el| format!("{el}"))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                write!(f, "[{els}]")
+            }
+        }
+    }
 }
 
 impl Resp {

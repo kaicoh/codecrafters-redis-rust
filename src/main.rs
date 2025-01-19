@@ -6,6 +6,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
+const BUF_SIZE: usize = 1024;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let config = Config::new(args);
@@ -21,9 +23,26 @@ fn main() {
 fn connect_master(config: &Config) -> io::Result<()> {
     if let Some(&addr) = config.master_addr().as_ref() {
         let mut stream = TcpStream::connect(addr)?;
-        let msg = Resp::A(vec![Resp::BS(Some("PING".into()))]);
 
-        stream.write_all(&msg.serialize())?;
+        // Send PING
+        let msg = Resp::A(vec![Resp::BS(Some("PING".into()))]);
+        send_to_master(&mut stream, msg)?;
+
+        // Send REPLCONF listening-port
+        let msg = Resp::A(vec![
+            Resp::BS(Some("REPLCONF".into())),
+            Resp::BS(Some("listening-port".into())),
+            Resp::BS(Some(format!("{}", config.port))),
+        ]);
+        send_to_master(&mut stream, msg)?;
+
+        // Send REPLCONF capa
+        let msg = Resp::A(vec![
+            Resp::BS(Some("REPLCONF".into())),
+            Resp::BS(Some("capa".into())),
+            Resp::BS(Some("psync2".into())),
+        ]);
+        send_to_master(&mut stream, msg)?;
     }
     Ok(())
 }
@@ -43,7 +62,7 @@ fn serve(config: Config) {
                 let store = Arc::clone(&store);
 
                 thread::spawn(move || {
-                    let mut buf = [0; 1024];
+                    let mut buf = [0; BUF_SIZE];
 
                     while stream.read(&mut buf).is_ok() {
                         let msg = trim_trailing_zero(&buf);
@@ -65,7 +84,7 @@ fn serve(config: Config) {
                             }
                         }
 
-                        buf = [0; 1024];
+                        buf = [0; BUF_SIZE];
                     }
                 });
             }
@@ -81,4 +100,18 @@ fn trim_trailing_zero(buf: &[u8]) -> &[u8] {
         Some(pos) => &buf[..pos],
         None => buf,
     }
+}
+
+fn send_to_master(stream: &mut TcpStream, msg: Resp) -> io::Result<()> {
+    stream.write_all(&msg.serialize())?;
+
+    let mut buf = [0; BUF_SIZE];
+    let n = stream.read(&mut buf[..])?;
+
+    match Resp::new(&buf[..n]) {
+        Ok(res) => println!("Received from master: {res}"),
+        Err(err) => eprintln!("Failed to get RESP message from the response: {err}"),
+    }
+
+    Ok(())
 }
