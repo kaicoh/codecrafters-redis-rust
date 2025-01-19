@@ -64,11 +64,9 @@ fn serve(config: Config) {
                 thread::spawn(move || {
                     let mut buf = [0; BUF_SIZE];
 
-                    while stream.read(&mut buf).is_ok() {
-                        let msg = trim_trailing_zero(&buf);
-
-                        if !msg.is_empty() {
-                            let res = match Command::new(msg) {
+                    while let Ok(n) = stream.read(&mut buf) {
+                        if n > 0 {
+                            let res = match Command::new(&buf[..n]) {
                                 Ok(cmd) => cmd.run(Arc::clone(&store)).unwrap_or_else(|err| {
                                     eprintln!("Failed to run command: {err}");
                                     Resp::from(err)
@@ -92,13 +90,6 @@ fn serve(config: Config) {
                 eprintln!("Failed to get TCP stream: {err}");
             }
         }
-    }
-}
-
-fn trim_trailing_zero(buf: &[u8]) -> &[u8] {
-    match buf.iter().position(|&v| v == 0) {
-        Some(pos) => &buf[..pos],
-        None => buf,
     }
 }
 
