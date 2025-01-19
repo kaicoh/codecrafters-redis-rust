@@ -15,6 +15,7 @@ pub enum Command {
     },
     ConfigGet(String),
     Keys,
+    Info,
     Unknown,
 }
 
@@ -58,6 +59,7 @@ impl Command {
                     .map(|v| Resp::BS(Some(v)))
                     .collect(),
             ),
+            Self::Info => Resp::BS(Some("role:master".into())),
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
@@ -114,6 +116,7 @@ impl Command {
                     _ => Self::Unknown,
                 },
                 "KEYS" => Self::Keys,
+                "INFO" => Self::Info,
                 _ => Self::Unknown,
             }
         } else {
