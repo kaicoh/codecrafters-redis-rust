@@ -25,6 +25,10 @@ impl Config {
     pub fn socket_addr(&self) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), self.port)
     }
+
+    pub fn master_addr(&self) -> &Option<SocketAddr> {
+        &self.master
+    }
 }
 
 fn get_arg(args: &[String], opt: &str) -> Option<String> {

@@ -1,8 +1,8 @@
 use redis_starter_rust as rss;
 use rss::{Command, Config, Resp, Store};
 use std::env;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
@@ -10,6 +10,25 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let config = Config::new(args);
 
+    if let Err(err) = connect_master(&config) {
+        eprintln!("ERROR: connecting master: {err}");
+        std::process::exit(1);
+    }
+
+    serve(config);
+}
+
+fn connect_master(config: &Config) -> io::Result<()> {
+    if let Some(&addr) = config.master_addr().as_ref() {
+        let mut stream = TcpStream::connect(addr)?;
+        let msg = Resp::A(vec![Resp::BS(Some("PING".into()))]);
+
+        stream.write_all(&msg.serialize())?;
+    }
+    Ok(())
+}
+
+fn serve(config: Config) {
     let listener = TcpListener::bind(config.socket_addr()).unwrap();
 
     let store = Arc::new(
