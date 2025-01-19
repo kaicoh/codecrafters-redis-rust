@@ -59,7 +59,10 @@ impl Command {
                     .map(|v| Resp::BS(Some(v)))
                     .collect(),
             ),
-            Self::Info => Resp::BS(Some("role:master".into())),
+            Self::Info => {
+                let role = store.role()?;
+                Resp::BS(Some(format!("role:{role}")))
+            }
             _ => {
                 return Err(RedisError::UnknownCommand);
             }

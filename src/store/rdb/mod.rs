@@ -8,24 +8,16 @@ use std::fs::File;
 use std::io::ErrorKind;
 
 #[derive(Debug, Clone, Default)]
-pub struct Rdb {
-    dir: Option<String>,
-    dbfilename: Option<String>,
-    db: HashMap<String, RedisValue>,
-}
+pub struct Rdb(HashMap<String, RedisValue>);
 
 impl Rdb {
-    pub fn new(config: Config) -> RedisResult<Self> {
+    pub fn new(config: &Config) -> RedisResult<Self> {
         let Config {
             dir, dbfilename, ..
         } = config;
-        let mut rdb = Self {
-            dir,
-            dbfilename,
-            ..Default::default()
-        };
+        let mut rdb: HashMap<String, RedisValue> = HashMap::new();
 
-        if let (Some(dir), Some(dbfilename)) = (rdb.dir.as_ref(), rdb.dbfilename.as_ref()) {
+        if let (Some(dir), Some(dbfilename)) = (dir, dbfilename) {
             let path = format!("{dir}/{dbfilename}");
 
             match File::open(path) {
@@ -33,13 +25,13 @@ impl Rdb {
                     for el in RdbFile::new(f) {
                         if let RdbElement::HashTableEntry { key, value, exp } = el {
                             let value = RedisValue { value, exp };
-                            rdb.db.insert(key, value);
+                            rdb.insert(key, value);
                         }
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::NotFound => {
                     eprintln!("Not found rdb file");
-                    return Ok(rdb);
+                    return Ok(Self(rdb));
                 }
                 Err(err) => {
                     return Err(RedisError::from(err));
@@ -47,18 +39,10 @@ impl Rdb {
             }
         }
 
-        Ok(rdb)
-    }
-
-    pub fn dir(&self) -> &Option<String> {
-        &self.dir
-    }
-
-    pub fn dbfilename(&self) -> &Option<String> {
-        &self.dbfilename
+        Ok(Self(rdb))
     }
 
     pub fn db(&self) -> &HashMap<String, RedisValue> {
-        &self.db
+        &self.0
     }
 }

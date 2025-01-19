@@ -1,10 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dir: Option<String>,
     pub dbfilename: Option<String>,
     pub port: u16,
+    pub master: Option<SocketAddr>,
 }
 
 impl Config {
@@ -15,6 +16,9 @@ impl Config {
             port: get_arg(&args, "--port")
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(6379),
+            master: get_arg(&args, "--replicaof")
+                .and_then(|v| v.replace(" ", ":").to_socket_addrs().ok())
+                .and_then(|mut v| v.next()),
         }
     }
 

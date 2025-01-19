@@ -14,15 +14,15 @@ pub struct Store(Mutex<Inner>);
 #[derive(Debug, Clone)]
 struct Inner {
     db: HashMap<String, RedisValue>,
-    rdb: Rdb,
+    config: Config,
 }
 
 impl Store {
     pub fn new(config: Config) -> RedisResult<Self> {
-        let rdb = Rdb::new(config)?;
+        let rdb = Rdb::new(&config)?;
         let inner = Inner {
             db: rdb.db().clone(),
-            rdb,
+            config,
         };
         Ok(Self(Mutex::new(inner)))
     }
@@ -61,12 +61,21 @@ impl Store {
 
     pub fn rdb_dir(&self) -> RedisResult<Option<String>> {
         let inner = self.lock()?;
-        Ok(inner.rdb.dir().clone())
+        Ok(inner.config.dir.clone())
     }
 
     pub fn rdb_dbfilename(&self) -> RedisResult<Option<String>> {
         let inner = self.lock()?;
-        Ok(inner.rdb.dbfilename().clone())
+        Ok(inner.config.dbfilename.clone())
+    }
+
+    pub fn role(&self) -> RedisResult<&'static str> {
+        let inner = self.lock()?;
+        let role = match inner.config.master {
+            Some(_) => "slave",
+            None => "master",
+        };
+        Ok(role)
     }
 
     fn lock(&self) -> RedisResult<MutexGuard<'_, Inner>> {
