@@ -16,6 +16,7 @@ pub enum Command {
     ConfigGet(String),
     Keys,
     Info,
+    ReplConf,
     Unknown,
 }
 
@@ -63,6 +64,7 @@ impl Command {
                 let role = store.role()?;
                 Resp::BS(Some(format!("role:{role}\r\nmaster_repl_offset:0\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")))
             }
+            Self::ReplConf => Resp::SS("OK".into()),
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
@@ -120,6 +122,7 @@ impl Command {
                 },
                 "KEYS" => Self::Keys,
                 "INFO" => Self::Info,
+                "REPLCONF" => Self::ReplConf,
                 _ => Self::Unknown,
             }
         } else {
@@ -214,6 +217,22 @@ mod tests {
         let args = vec!["KEYS".to_string(), "*".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Keys;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_info_command() {
+        let args = vec!["INFO".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Info;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_replconf_command() {
+        let args = vec!["REPLCONF".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::ReplConf;
         assert_eq!(cmd, expected);
     }
 }
