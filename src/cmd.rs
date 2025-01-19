@@ -1,4 +1,5 @@
-use super::{Config, RedisError, RedisResult, Resp, Store};
+use super::{RedisError, RedisResult, Resp, Store};
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
@@ -26,7 +27,7 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Store, config: Config) -> RedisResult<Resp> {
+    pub fn run(self, store: Arc<Store>) -> RedisResult<Resp> {
         let res = match self {
             Self::Ping => Resp::SS("PONG".into()),
             Self::Echo(val) => Resp::BS(Some(val)),
@@ -39,8 +40,8 @@ impl Command {
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
-                    "dir" => config.dir()?,
-                    "dbfilename" => config.dbfilename()?,
+                    "dir" => store.rdb_dir()?,
+                    "dbfilename" => store.rdb_dbfilename()?,
                     _ => None,
                 };
 

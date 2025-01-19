@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod resp;
 mod store;
+mod utils;
 
 pub use cmd::Command;
 pub use config::Config;

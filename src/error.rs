@@ -20,6 +20,12 @@ pub enum RedisError {
 
     #[error("Unknown command received")]
     UnknownCommand,
+
+    #[error("Unexpected encoding")]
+    Encoding,
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl From<RedisError> for Resp {

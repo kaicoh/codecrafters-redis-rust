@@ -1,6 +1,6 @@
 mod iterator;
 
-use super::{RedisError, RedisResult};
+use super::{utils, RedisError, RedisResult};
 use iterator::RespToken;
 
 const TERM: &str = "\r\n";
@@ -44,24 +44,24 @@ impl Resp {
     fn from_tokens(tokens: &mut RespToken<'_>) -> RedisResult<Self> {
         match tokens.next() {
             Some(token) if token.starts_with(b"+") => {
-                let val = stringify(&token[1..])?;
+                let val = utils::stringify(&token[1..])?;
                 Ok(Self::SS(val.into()))
             }
             Some(token) if token.starts_with(b"-") => {
-                let val = stringify(&token[1..])?;
+                let val = utils::stringify(&token[1..])?;
                 Ok(Self::SE(val.into()))
             }
             Some(token) if token == b"$-1" => Ok(Self::BS(None)),
             Some(token) if token.starts_with(b"$") => {
-                let len = parse_usize(&token[1..])?;
+                let len = utils::parse_usize(&token[1..])?;
                 tokens
                     .next()
                     .ok_or(RedisError::RespSyntax)
-                    .and_then(|v| stringify(&v[..len]))
+                    .and_then(|v| utils::stringify(&v[..len]))
                     .map(|v| Self::BS(Some(v.into())))
             }
             Some(token) if token.starts_with(b"*") => {
-                let len = parse_usize(&token[1..])?;
+                let len = utils::parse_usize(&token[1..])?;
                 let mut elements: Vec<Self> = vec![];
 
                 for _ in 0..len {
@@ -74,14 +74,6 @@ impl Resp {
             _ => Err(RedisError::RespSyntax),
         }
     }
-}
-
-fn stringify(buf: &[u8]) -> RedisResult<&str> {
-    std::str::from_utf8(buf).map_err(RedisError::from)
-}
-
-fn parse_usize(buf: &[u8]) -> RedisResult<usize> {
-    stringify(buf)?.parse().map_err(RedisError::from)
 }
 
 #[cfg(test)]
