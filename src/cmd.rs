@@ -14,6 +14,7 @@ pub enum Command {
         exp: Option<u64>,
     },
     ConfigGet(String),
+    Keys,
     Unknown,
 }
 
@@ -50,6 +51,13 @@ impl Command {
                     val.map(|v| Resp::BS(Some(v))).unwrap_or(Resp::BS(None)),
                 ])
             }
+            Self::Keys => Resp::A(
+                store
+                    .keys()?
+                    .into_iter()
+                    .map(|v| Resp::BS(Some(v)))
+                    .collect(),
+            ),
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
@@ -105,6 +113,7 @@ impl Command {
                     }
                     _ => Self::Unknown,
                 },
+                "KEYS" => Self::Keys,
                 _ => Self::Unknown,
             }
         } else {
@@ -191,6 +200,14 @@ mod tests {
         let args = vec!["CONFIG".to_string(), "GET".to_string(), "foo".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::ConfigGet("foo".into());
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_keys_command() {
+        let args = vec!["KEYS".to_string(), "*".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Keys;
         assert_eq!(cmd, expected);
     }
 }

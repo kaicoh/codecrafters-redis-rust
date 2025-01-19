@@ -43,6 +43,12 @@ impl Store {
         Ok(value)
     }
 
+    pub fn keys(&self) -> RedisResult<Vec<String>> {
+        let inner = self.lock()?;
+        let keys: Vec<String> = inner.db.keys().map(|v| v.to_string()).collect();
+        Ok(keys)
+    }
+
     pub fn set(&self, key: &str, value: String, exp: Option<u64>) -> RedisResult<()> {
         let mut inner = self.lock()?;
         let value = RedisValue {
