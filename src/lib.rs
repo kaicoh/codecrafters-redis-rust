@@ -5,7 +5,7 @@ mod resp;
 mod store;
 mod utils;
 
-pub use cmd::Command;
+pub use cmd::{Command, Message};
 pub use config::Config;
 pub use error::RedisError;
 pub use resp::Resp;

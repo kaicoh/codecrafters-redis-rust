@@ -74,19 +74,21 @@ fn serve(config: Config) {
 
                     while let Ok(n) = stream.read(&mut buf) {
                         if n > 0 {
-                            let res = match Command::new(&buf[..n]) {
+                            let messages = match Command::new(&buf[..n]) {
                                 Ok(cmd) => cmd.run(Arc::clone(&store)).unwrap_or_else(|err| {
                                     eprintln!("Failed to run command: {err}");
-                                    Resp::from(err)
+                                    vec![Resp::from(err).into()]
                                 }),
                                 Err(err) => {
                                     eprintln!("Failed to parse command: {err}");
-                                    Resp::from(err)
+                                    vec![Resp::from(err).into()]
                                 }
                             };
 
-                            if let Err(err) = stream.write_all(&res.serialize()) {
-                                eprintln!("Failed to write TCP stream: {err}");
+                            for msg in messages {
+                                if let Err(err) = stream.write_all(msg.as_bytes()) {
+                                    eprintln!("Failed to write TCP stream: {err}");
+                                }
                             }
                         }
 

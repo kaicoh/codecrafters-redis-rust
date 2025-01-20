@@ -1,9 +1,6 @@
 use super::{RedisError, RedisResult, Resp, Store};
 use std::sync::Arc;
 
-const REPLICATION_ID: &str = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
-const REPLICATION_OFFSET: &str = "0";
-
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Ping,
@@ -34,16 +31,20 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Arc<Store>) -> RedisResult<Resp> {
-        let res = match self {
-            Self::Ping => Resp::SS("PONG".into()),
-            Self::Echo(val) => Resp::BS(Some(val)),
-            Self::Get { key } => store
+    pub fn run(self, store: Arc<Store>) -> RedisResult<Vec<Message>> {
+        let messages: Vec<Message> = match self {
+            Self::Ping => vec![Resp::SS("PONG".into()).into()],
+            Self::Echo(val) => vec![Resp::BS(Some(val)).into()],
+            Self::Get { key } => vec![store
                 .get(&key)?
                 .map(|v| Resp::BS(Some(v)))
-                .unwrap_or(Resp::BS(None)),
+                .unwrap_or(Resp::BS(None))
+                .into()],
             Self::Set { key, value, exp } => {
-                store.set(&key, value, exp).map(|_| Resp::SS("OK".into()))?
+                vec![store
+                    .set(&key, value, exp)
+                    .map(|_| Resp::SS("OK".into()))?
+                    .into()]
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
@@ -52,29 +53,49 @@ impl Command {
                     _ => None,
                 };
 
-                Resp::A(vec![
+                vec![Resp::A(vec![
                     Resp::BS(Some(key)),
                     val.map(|v| Resp::BS(Some(v))).unwrap_or(Resp::BS(None)),
                 ])
+                .into()]
             }
-            Self::Keys => Resp::A(
+            Self::Keys => vec![Resp::A(
                 store
                     .keys()?
                     .into_iter()
                     .map(|v| Resp::BS(Some(v)))
                     .collect(),
-            ),
+            )
+            .into()],
             Self::Info => {
                 let role = store.role()?;
-                Resp::BS(Some(format!("role:{role}\r\nmaster_repl_offset:{REPLICATION_OFFSET}\r\nmaster_replid:{REPLICATION_ID}")))
+                let repl_id = store.repl_id()?;
+                let repl_offset = store.repl_offset()?;
+                vec![Resp::BS(Some(format!(
+                    "role:{role}\r\nmaster_repl_offset:{repl_offset}\r\nmaster_replid:{repl_id}"
+                )))
+                .into()]
             }
-            Self::ReplConf => Resp::SS("OK".into()),
-            Self::Psync => Resp::SS(format!("FULLRESYNC {REPLICATION_ID} {REPLICATION_OFFSET}")),
+            Self::ReplConf => vec![Resp::SS("OK".into()).into()],
+            Self::Psync => {
+                let repl_id = store.repl_id()?;
+                let repl_offset = store.repl_offset()?;
+
+                let order = Resp::SS(format!("FULLRESYNC {repl_id} {repl_offset}"));
+                let rdb = store.rdb(repl_offset)?;
+                let rdb_serialized: Vec<u8> = format!("${}\r\n", rdb.len())
+                    .into_bytes()
+                    .into_iter()
+                    .chain(rdb)
+                    .collect();
+
+                vec![order.into(), Message(rdb_serialized)]
+            }
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
         };
-        Ok(res)
+        Ok(messages)
     }
 
     fn from_args(args: Vec<String>) -> RedisResult<Self> {
@@ -152,6 +173,21 @@ fn command_args(message: Resp) -> Vec<String> {
             })
             .collect(),
         _ => vec![],
+    }
+}
+
+#[derive(Debug)]
+pub struct Message(Vec<u8>);
+
+impl Message {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Resp> for Message {
+    fn from(resp: Resp) -> Self {
+        Self(resp.serialize())
     }
 }
 
@@ -239,6 +275,14 @@ mod tests {
         let args = vec!["REPLCONF".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::ReplConf;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_psync_command() {
+        let args = vec!["PSYNC".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Psync;
         assert_eq!(cmd, expected);
     }
 }
