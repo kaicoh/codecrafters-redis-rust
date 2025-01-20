@@ -26,6 +26,9 @@ pub enum RedisError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
 }
 
 impl From<RedisError> for Resp {

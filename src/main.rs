@@ -67,11 +67,21 @@ fn serve(config: Config) {
 
                     while let Ok(n) = stream.read(&mut buf) {
                         if n > 0 {
+                            let store = Arc::clone(&store);
+
                             let messages = match Command::new(&buf[..n]) {
-                                Ok(cmd) => cmd.run(Arc::clone(&store)).unwrap_or_else(|err| {
-                                    eprintln!("Failed to run command: {err}");
-                                    vec![Resp::from(err).into()]
-                                }),
+                                Ok(cmd) => {
+                                    if cmd.store_connection() {
+                                        if let Err(err) = store.save_replica_stream(&stream) {
+                                            eprintln!("Failed to save replica connection. {err}");
+                                        }
+                                    }
+
+                                    cmd.run(store).unwrap_or_else(|err| {
+                                        eprintln!("Failed to run command: {err}");
+                                        vec![Resp::from(err).into()]
+                                    })
+                                }
                                 Err(err) => {
                                     eprintln!("Failed to parse command: {err}");
                                     vec![Resp::from(err).into()]

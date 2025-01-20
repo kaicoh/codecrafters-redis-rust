@@ -1,9 +1,12 @@
 mod rdb;
+mod replica;
 mod value;
 
-use super::{utils, Config, RedisError, RedisResult};
+use super::{utils, Config, Message, RedisError, RedisResult, Resp};
 use rdb::Rdb;
+use replica::Replica;
 use std::collections::HashMap;
+use std::net::TcpStream;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use value::RedisValue;
@@ -11,10 +14,11 @@ use value::RedisValue;
 #[derive(Debug)]
 pub struct Store(Mutex<Inner>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Inner {
     db: HashMap<String, RedisValue>,
     config: Config,
+    replicas: Vec<Replica>,
 }
 
 impl Store {
@@ -23,6 +27,7 @@ impl Store {
         let inner = Inner {
             db: rdb.db().clone(),
             config,
+            replicas: vec![],
         };
         Ok(Self(Mutex::new(inner)))
     }
@@ -55,7 +60,14 @@ impl Store {
             value,
             exp: exp.map(|n| SystemTime::now() + Duration::from_millis(n)),
         };
-        inner.db.insert(key.into(), value);
+        inner.db.insert(key.into(), value.clone());
+
+        for replica in inner.replicas.iter_mut() {
+            let msg = value.to_resp(key)?.into();
+            if let Err(err) = replica.send(msg) {
+                eprintln!("Failed to sync replica. {err}");
+            }
+        }
         Ok(())
     }
 
@@ -97,6 +109,13 @@ impl Store {
             0xc0, 0xff, 0x5a, 0xa2,
         ];
         Ok(empty_rdb)
+    }
+
+    pub fn save_replica_stream(&self, stream: &TcpStream) -> RedisResult<()> {
+        let replica = Replica::new(stream)?;
+        let mut inner = self.lock()?;
+        inner.replicas.push(replica);
+        Ok(())
     }
 
     fn lock(&self) -> RedisResult<MutexGuard<'_, Inner>> {

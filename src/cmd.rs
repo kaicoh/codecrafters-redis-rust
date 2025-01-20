@@ -158,6 +158,10 @@ impl Command {
 
         Ok(cmd)
     }
+
+    pub fn store_connection(&self) -> bool {
+        matches!(self, Self::Psync)
+    }
 }
 
 fn command_args(message: Resp) -> Vec<String> {
