@@ -96,6 +96,17 @@ impl Resp {
     }
 }
 
+impl<T: Into<String>> From<Vec<T>> for Resp {
+    fn from(values: Vec<T>) -> Self {
+        Self::A(
+            values
+                .into_iter()
+                .map(|v| Resp::BS(Some(v.into())))
+                .collect(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,31 +25,24 @@ fn connect_master(config: &Config) -> io::Result<()> {
         let mut stream = TcpStream::connect(addr)?;
 
         // Send PING
-        let msg = Resp::A(vec![Resp::BS(Some("PING".into()))]);
+        let msg: Resp = vec!["PING"].into();
         send_to_master(&mut stream, msg)?;
 
         // Send REPLCONF listening-port
-        let msg = Resp::A(vec![
-            Resp::BS(Some("REPLCONF".into())),
-            Resp::BS(Some("listening-port".into())),
-            Resp::BS(Some(format!("{}", config.port))),
-        ]);
+        let msg: Resp = vec![
+            "REPLCONF".into(),
+            "listening-port".into(),
+            format!("{}", config.port),
+        ]
+        .into();
         send_to_master(&mut stream, msg)?;
 
         // Send REPLCONF capa
-        let msg = Resp::A(vec![
-            Resp::BS(Some("REPLCONF".into())),
-            Resp::BS(Some("capa".into())),
-            Resp::BS(Some("psync2".into())),
-        ]);
+        let msg: Resp = vec!["REPLCONF", "capa", "psync2"].into();
         send_to_master(&mut stream, msg)?;
 
         // Send PSYNC
-        let msg = Resp::A(vec![
-            Resp::BS(Some("PSYNC".into())),
-            Resp::BS(Some("?".into())),
-            Resp::BS(Some("-1".into())),
-        ]);
+        let msg: Resp = vec!["PSYNC", "?", "-1"].into();
         send_to_master(&mut stream, msg)?;
     }
     Ok(())
