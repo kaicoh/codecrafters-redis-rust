@@ -1,54 +1,23 @@
 use redis_starter_rust as rss;
-use rss::{Command, Config, Resp, Store};
+use rss::{replica, Command, Config, IncomingMessage, RedisResult, Resp, Store, BUF_SIZE};
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
-
-const BUF_SIZE: usize = 1024;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let config = Config::new(args);
 
-    if let Err(err) = connect_master(&config) {
-        eprintln!("ERROR: connecting master: {err}");
-        std::process::exit(1);
-    }
+    let master_stream = replica::connect_master(&config)
+        .inspect_err(|err| eprintln!("ERROR: connecting master. {err}"))
+        .unwrap();
 
-    serve(config);
+    serve(config, master_stream);
 }
 
-fn connect_master(config: &Config) -> io::Result<()> {
-    if let Some(&addr) = config.master_addr().as_ref() {
-        let mut stream = TcpStream::connect(addr)?;
-
-        // Send PING
-        let msg: Resp = vec!["PING"].into();
-        send_to_master(&mut stream, msg)?;
-
-        // Send REPLCONF listening-port
-        let msg: Resp = vec![
-            "REPLCONF".into(),
-            "listening-port".into(),
-            format!("{}", config.port),
-        ]
-        .into();
-        send_to_master(&mut stream, msg)?;
-
-        // Send REPLCONF capa
-        let msg: Resp = vec!["REPLCONF", "capa", "psync2"].into();
-        send_to_master(&mut stream, msg)?;
-
-        // Send PSYNC
-        let msg: Resp = vec!["PSYNC", "?", "-1"].into();
-        send_to_master(&mut stream, msg)?;
-    }
-    Ok(())
-}
-
-fn serve(config: Config) {
+fn serve(config: Config, master_stream: Option<TcpStream>) {
     let listener = TcpListener::bind(config.socket_addr()).unwrap();
 
     let store = Arc::new(
@@ -57,47 +26,14 @@ fn serve(config: Config) {
             .unwrap(),
     );
 
+    if let Some(stream) = master_stream {
+        handle_stream(stream, &store);
+    }
+
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
-                let store = Arc::clone(&store);
-
-                thread::spawn(move || {
-                    let mut buf = [0; BUF_SIZE];
-
-                    while let Ok(n) = stream.read(&mut buf) {
-                        if n > 0 {
-                            let store = Arc::clone(&store);
-
-                            let messages = match Command::new(&buf[..n]) {
-                                Ok(cmd) => {
-                                    if cmd.store_connection() {
-                                        if let Err(err) = store.save_replica_stream(&stream) {
-                                            eprintln!("Failed to save replica connection. {err}");
-                                        }
-                                    }
-
-                                    cmd.run(store).unwrap_or_else(|err| {
-                                        eprintln!("Failed to run command: {err}");
-                                        vec![Resp::from(err).into()]
-                                    })
-                                }
-                                Err(err) => {
-                                    eprintln!("Failed to parse command: {err}");
-                                    vec![Resp::from(err).into()]
-                                }
-                            };
-
-                            for msg in messages {
-                                if let Err(err) = stream.write_all(msg.as_bytes()) {
-                                    eprintln!("Failed to write TCP stream: {err}");
-                                }
-                            }
-                        }
-
-                        buf = [0; BUF_SIZE];
-                    }
-                });
+            Ok(stream) => {
+                handle_stream(stream, &store);
             }
             Err(err) => {
                 eprintln!("Failed to get TCP stream: {err}");
@@ -106,16 +42,60 @@ fn serve(config: Config) {
     }
 }
 
-fn send_to_master(stream: &mut TcpStream, msg: Resp) -> io::Result<()> {
-    stream.write_all(&msg.serialize())?;
+fn handle_stream(mut stream: TcpStream, store: &Arc<Store>) {
+    let store = Arc::clone(store);
 
-    let mut buf = [0; BUF_SIZE];
-    let n = stream.read(&mut buf[..])?;
+    thread::spawn(move || {
+        let mut buf = [0; BUF_SIZE];
 
-    match Resp::new(&buf[..n]) {
-        Ok(res) => println!("Received from master: {res}"),
-        Err(err) => eprintln!("Failed to get RESP message from the response: {err}"),
+        while let Ok(n) = stream.read(&mut buf) {
+            if n > 0 {
+                let store = Arc::clone(&store);
+
+                let commands = match get_commands(&buf[..n]) {
+                    Ok(commands) => commands,
+                    Err(err) => {
+                        eprintln!("Failed to get commands from incoming message. {err}");
+                        eprintln!("Incoming message: {:?}", &buf[..n]);
+                        continue;
+                    }
+                };
+
+                for cmd in commands {
+                    if cmd.store_connection() {
+                        if let Err(err) = store.save_replica_stream(&stream) {
+                            eprintln!("Failed to save replica connection. {err}");
+                        }
+                    }
+
+                    let store = Arc::clone(&store);
+
+                    let responses = cmd.run(store).unwrap_or_else(|err| {
+                        eprintln!("Failed to run command: {err}");
+                        vec![Resp::from(err).into()]
+                    });
+
+                    for res in responses {
+                        if let Err(err) = stream.write_all(res.as_bytes()) {
+                            eprintln!("Failed to write TCP stream: {err}");
+                        }
+                    }
+                }
+            }
+
+            buf = [0; BUF_SIZE];
+        }
+    });
+}
+
+fn get_commands(buf: &[u8]) -> RedisResult<Vec<Command>> {
+    let mut commands: Vec<Command> = vec![];
+    let messages = IncomingMessage::new(buf)?;
+
+    for resp in messages.into_iter() {
+        let command = Command::new(resp)?;
+        commands.push(command);
     }
 
-    Ok(())
+    Ok(commands)
 }

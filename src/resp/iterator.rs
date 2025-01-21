@@ -12,6 +12,12 @@ impl<'a> RespToken<'a> {
             cursor: Cursor::new(buf),
         }
     }
+
+    pub(crate) fn finished(&self) -> bool {
+        let current = self.cursor.position() as usize;
+        let buf_size = self.cursor.get_ref().len();
+        buf_size <= current
+    }
 }
 
 impl<'a> Iterator for RespToken<'a> {
@@ -128,6 +134,27 @@ mod tests {
         assert_eq!(item, Some(b"three" as &[u8]));
         let item = splitter.next();
         assert_eq!(item, Some(b"four" as &[u8]));
+        let item = splitter.next();
+        assert_eq!(item, None);
+    }
+
+    #[test]
+    fn check_finished() {
+        let bytes = b"one\r\ntwo\r\n";
+        let mut splitter = RespToken::new(bytes);
+
+        assert!(!splitter.finished());
+
+        let item = splitter.next();
+        assert_eq!(item, Some(b"one" as &[u8]));
+
+        assert!(!splitter.finished());
+
+        let item = splitter.next();
+        assert_eq!(item, Some(b"two" as &[u8]));
+
+        assert!(splitter.finished());
+
         let item = splitter.next();
         assert_eq!(item, None);
     }

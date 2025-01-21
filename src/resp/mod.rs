@@ -7,6 +7,32 @@ use std::fmt;
 const TERM: &str = "\r\n";
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct IncomingMessage(Vec<Resp>);
+
+impl IncomingMessage {
+    pub fn new(buf: &[u8]) -> RedisResult<Self> {
+        let mut resps: Vec<Resp> = vec![];
+        let mut tokens = RespToken::new(buf);
+
+        while !tokens.finished() {
+            let resp = Resp::from_tokens(&mut tokens)?;
+            resps.push(resp);
+        }
+
+        Ok(Self(resps))
+    }
+}
+
+impl IntoIterator for IncomingMessage {
+    type Item = Resp;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Resp {
     /// SimpleString
     SS(String),
@@ -61,7 +87,7 @@ impl Resp {
         }
     }
 
-    fn from_tokens(tokens: &mut RespToken<'_>) -> RedisResult<Self> {
+    pub(crate) fn from_tokens(tokens: &mut RespToken<'_>) -> RedisResult<Self> {
         match tokens.next() {
             Some(token) if token.starts_with(b"+") => {
                 let val = utils::stringify(&token[1..])?;
@@ -110,6 +136,17 @@ impl<T: Into<String>> From<Vec<T>> for Resp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_parses_incoming_message() {
+        let bytes = b"$5\r\nhello\r\n$5\r\nworld\r\n";
+        let actual = IncomingMessage::new(bytes).unwrap();
+        let expected = IncomingMessage(vec![
+            Resp::BS(Some("hello".into())),
+            Resp::BS(Some("world".into())),
+        ]);
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn it_parses_into_simple_string() {

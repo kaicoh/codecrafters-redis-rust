@@ -22,12 +22,8 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn new(buf: &[u8]) -> RedisResult<Self> {
-        if buf.is_empty() {
-            return Ok(Self::Unknown);
-        }
-
-        let args = command_args(Resp::new(buf)?);
+    pub fn new(resp: Resp) -> RedisResult<Self> {
+        let args = command_args(resp);
         Self::from_args(args)
     }
 
