@@ -1,29 +1,22 @@
-mod rdb;
-mod replica;
-mod value;
-
-use super::{utils, Config, Message, RedisError, RedisResult, Resp};
-use rdb::Rdb;
-use replica::Replica;
+use super::{message::OutgoingMessage, rdb::Rdb, value::Value, Config, RedisError, RedisResult};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
-use value::RedisValue;
 
 #[derive(Debug)]
 pub struct Store(Mutex<Inner>);
 
 #[derive(Debug)]
 struct Inner {
-    db: HashMap<String, RedisValue>,
+    db: HashMap<String, Value>,
     config: Config,
-    replicas: Vec<Replica>,
+    replicas: Vec<TcpStream>,
 }
 
 impl Store {
     pub fn new(config: Config) -> RedisResult<Self> {
-        let rdb = Rdb::new(&config)?;
+        let rdb = Rdb::from_conf(&config)?;
         let inner = Inner {
             db: rdb.db().clone(),
             config,
@@ -40,7 +33,7 @@ impl Store {
                     inner.db.remove(key);
                     None
                 } else {
-                    Some(v.value.clone())
+                    Some(v.to_string())
                 }
             }
             _ => None,
@@ -56,15 +49,16 @@ impl Store {
 
     pub fn set(&self, key: &str, value: String, exp: Option<u64>) -> RedisResult<()> {
         let mut inner = self.lock()?;
-        let value = RedisValue {
+        let value = Value::String {
             value,
             exp: exp.map(|n| SystemTime::now() + Duration::from_millis(n)),
         };
         inner.db.insert(key.into(), value.clone());
 
-        for replica in inner.replicas.iter_mut() {
-            let msg = value.to_resp(key)?.into();
-            if let Err(err) = replica.send(msg) {
+        for stream in inner.replicas.iter_mut() {
+            let msg: OutgoingMessage = value.to_resp(key)?.into();
+
+            if let Err(err) = msg.write_to(stream) {
                 eprintln!("Failed to sync replica. {err}");
             }
         }
@@ -112,9 +106,8 @@ impl Store {
     }
 
     pub fn save_replica_stream(&self, stream: &TcpStream) -> RedisResult<()> {
-        let replica = Replica::new(stream)?;
         let mut inner = self.lock()?;
-        inner.replicas.push(replica);
+        inner.replicas.push(stream.try_clone()?);
         Ok(())
     }
 

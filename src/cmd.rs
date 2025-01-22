@@ -1,4 +1,4 @@
-use super::{RedisError, RedisResult, Resp, Store};
+use super::{OutgoingMessage, RedisError, RedisResult, Resp, Store};
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq)]
@@ -27,21 +27,19 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Arc<Store>) -> RedisResult<Vec<Message>> {
-        let messages: Vec<Message> = match self {
-            Self::Ping => vec![Resp::SS("PONG".into()).into()],
-            Self::Echo(val) => vec![Resp::BS(Some(val)).into()],
-            Self::Get { key } => vec![store
+    pub fn run(self, store: Arc<Store>) -> RedisResult<OutgoingMessage> {
+        let message: OutgoingMessage = match self {
+            Self::Ping => Resp::SS("PONG".into()).into(),
+            Self::Echo(val) => Resp::BS(Some(val)).into(),
+            Self::Get { key } => store
                 .get(&key)?
                 .map(|v| Resp::BS(Some(v)))
                 .unwrap_or(Resp::BS(None))
-                .into()],
-            Self::Set { key, value, exp } => {
-                vec![store
-                    .set(&key, value, exp)
-                    .map(|_| Resp::SS("OK".into()))?
-                    .into()]
-            }
+                .into(),
+            Self::Set { key, value, exp } => store
+                .set(&key, value, exp)
+                .map(|_| Resp::SS("OK".into()))?
+                .into(),
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
                     "dir" => store.rdb_dir()?,
@@ -49,30 +47,30 @@ impl Command {
                     _ => None,
                 };
 
-                vec![Resp::A(vec![
+                Resp::A(vec![
                     Resp::BS(Some(key)),
                     val.map(|v| Resp::BS(Some(v))).unwrap_or(Resp::BS(None)),
                 ])
-                .into()]
+                .into()
             }
-            Self::Keys => vec![Resp::A(
+            Self::Keys => Resp::A(
                 store
                     .keys()?
                     .into_iter()
                     .map(|v| Resp::BS(Some(v)))
                     .collect(),
             )
-            .into()],
+            .into(),
             Self::Info => {
                 let role = store.role()?;
                 let repl_id = store.repl_id()?;
                 let repl_offset = store.repl_offset()?;
-                vec![Resp::BS(Some(format!(
+                Resp::BS(Some(format!(
                     "role:{role}\r\nmaster_repl_offset:{repl_offset}\r\nmaster_replid:{repl_id}"
                 )))
-                .into()]
+                .into()
             }
-            Self::ReplConf => vec![Resp::SS("OK".into()).into()],
+            Self::ReplConf => Resp::SS("OK".into()).into(),
             Self::Psync => {
                 let repl_id = store.repl_id()?;
                 let repl_offset = store.repl_offset()?;
@@ -85,13 +83,13 @@ impl Command {
                     .chain(rdb)
                     .collect();
 
-                vec![order.into(), Message(rdb_serialized)]
+                OutgoingMessage::new(vec![order.serialize(), rdb_serialized])
             }
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
         };
-        Ok(messages)
+        Ok(message)
     }
 
     fn from_args(args: Vec<String>) -> RedisResult<Self> {
@@ -173,21 +171,6 @@ fn command_args(message: Resp) -> Vec<String> {
             })
             .collect(),
         _ => vec![],
-    }
-}
-
-#[derive(Debug)]
-pub struct Message(Vec<u8>);
-
-impl Message {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<Resp> for Message {
-    fn from(resp: Resp) -> Self {
-        Self(resp.serialize())
     }
 }
 
