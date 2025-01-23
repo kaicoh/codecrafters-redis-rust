@@ -16,7 +16,10 @@ pub enum Command {
     ConfigGet(String),
     Keys,
     Info,
-    ReplConf,
+    ReplConf {
+        key: String,
+        value: String,
+    },
     Psync,
     Unknown,
 }
@@ -70,7 +73,15 @@ impl Command {
                 )))
                 .into()
             }
-            Self::ReplConf => Resp::SS("OK".into()).into(),
+            Self::ReplConf { key, .. } => match key.to_uppercase().as_str() {
+                "GETACK" => Resp::A(vec![
+                    Resp::BS(Some("REPLCONF".into())),
+                    Resp::BS(Some("ACK".into())),
+                    Resp::BS(Some("0".into())),
+                ])
+                .into(),
+                _ => Resp::SS("OK".into()).into(),
+            },
             Self::Psync => {
                 let repl_id = store.repl_id()?;
                 let repl_offset = store.repl_offset()?;
@@ -142,7 +153,17 @@ impl Command {
                 },
                 "KEYS" => Self::Keys,
                 "INFO" => Self::Info,
-                "REPLCONF" => Self::ReplConf,
+                "REPLCONF" => {
+                    let key = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 2, got: 0 })?
+                        .to_string();
+                    let value = args
+                        .get(2)
+                        .ok_or(RedisError::LackOfArgs { need: 2, got: 1 })?
+                        .to_string();
+                    Self::ReplConf { key, value }
+                }
                 "PSYNC" => Self::Psync,
                 _ => Self::Unknown,
             }
@@ -255,9 +276,16 @@ mod tests {
 
     #[test]
     fn it_parses_replconf_command() {
-        let args = vec!["REPLCONF".to_string()];
+        let args = vec![
+            "REPLCONF".to_string(),
+            "listening-port".to_string(),
+            "6380".to_string(),
+        ];
         let cmd = Command::from_args(args).unwrap();
-        let expected = Command::ReplConf;
+        let expected = Command::ReplConf {
+            key: "listening-port".into(),
+            value: "6380".into(),
+        };
         assert_eq!(cmd, expected);
     }
 
