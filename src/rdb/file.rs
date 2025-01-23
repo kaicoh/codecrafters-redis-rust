@@ -26,11 +26,17 @@ pub enum RdbElement {
 }
 
 #[derive(Debug)]
-pub struct RdbFile<R: Read>(R);
+pub struct RdbFile<R: Read> {
+    inner: R,
+    eof: bool,
+}
 
 impl<R: Read> RdbFile<R> {
     pub fn new(r: R) -> Self {
-        Self(r)
+        Self {
+            inner: r,
+            eof: false,
+        }
     }
 }
 
@@ -38,18 +44,24 @@ impl<R: Read> Iterator for RdbFile<R> {
     type Item = RdbElement;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut one_byte = [0u8; 1];
+        if self.eof {
+            return None;
+        }
 
-        match self.0.read_exact(&mut one_byte) {
+        let mut one_byte = [0u8; 1];
+        match self.inner.read_exact(&mut one_byte) {
             Ok(_) => match one_byte {
-                [0x52] => read_header(&mut self.0),
-                [0xfa] => read_metadata(&mut self.0),
-                [0xfe] => read_db_index(&mut self.0),
-                [0xfb] => read_hash_size(&mut self.0),
-                [0x00] => read_hash_entry(&mut self.0),
-                [0xfc] => read_hash_entry_exp_millis(&mut self.0),
-                [0xfd] => read_hash_entry_exp_secs(&mut self.0),
-                [0xff] => read_eof(&mut self.0),
+                [0x52] => read_header(&mut self.inner),
+                [0xfa] => read_metadata(&mut self.inner),
+                [0xfe] => read_db_index(&mut self.inner),
+                [0xfb] => read_hash_size(&mut self.inner),
+                [0x00] => read_hash_entry(&mut self.inner),
+                [0xfc] => read_hash_entry_exp_millis(&mut self.inner),
+                [0xfd] => read_hash_entry_exp_secs(&mut self.inner),
+                [0xff] => {
+                    self.eof = true;
+                    read_eof(&mut self.inner)
+                }
                 _ => {
                     eprintln!("Unexpected first byte: {one_byte:#?}");
                     None
