@@ -9,6 +9,10 @@ pub(crate) fn parse_usize(buf: &[u8]) -> RedisResult<usize> {
     stringify(buf)?.parse().map_err(RedisError::from)
 }
 
+pub(crate) fn parse_i64(buf: &[u8]) -> RedisResult<i64> {
+    stringify(buf)?.parse().map_err(RedisError::from)
+}
+
 pub(crate) const TERM: &str = "\r\n";
 
 #[derive(Debug)]
@@ -99,6 +103,21 @@ fn seek<T: AsRef<[u8]>>(cursor: &mut Cursor<T>, len: usize) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_int() {
+        let bytes: &[u8] = b"15";
+        let actual = parse_i64(bytes).unwrap();
+        assert_eq!(actual, 15);
+
+        let bytes: &[u8] = b"+15";
+        let actual = parse_i64(bytes).unwrap();
+        assert_eq!(actual, 15);
+
+        let bytes: &[u8] = b"-15";
+        let actual = parse_i64(bytes).unwrap();
+        assert_eq!(actual, -15);
+    }
 
     #[test]
     fn empty_bytes() {

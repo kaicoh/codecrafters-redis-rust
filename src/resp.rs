@@ -10,6 +10,8 @@ pub enum Resp {
     SS(String),
     /// SimpleError
     SE(String),
+    // Integer
+    I(i64),
     /// BulkString
     BS(Option<String>),
     /// Array
@@ -21,6 +23,7 @@ impl fmt::Display for Resp {
         match self {
             Self::SS(val) => write!(f, "{val}"),
             Self::SE(val) => write!(f, "{val}"),
+            Self::I(val) => write!(f, "{val}"),
             Self::BS(Some(val)) => write!(f, "{val}"),
             Self::BS(None) => write!(f, ""),
             Self::A(els) => {
@@ -45,6 +48,7 @@ impl Resp {
         match self {
             Self::SS(val) => format!("+{val}{TERM}").into_bytes(),
             Self::SE(val) => format!("-{val}{TERM}").into_bytes(),
+            Self::I(num) => format!(":{num}{TERM}").into_bytes(),
             Self::BS(Some(val)) => format!("${}{TERM}{val}{TERM}", val.len()).into_bytes(),
             Self::BS(None) => format!("$-1{TERM}").into_bytes(),
             Self::A(vals) => {
@@ -76,6 +80,10 @@ impl Resp {
             Some(token) if token.starts_with(b"-") => {
                 let val = utils::stringify(&token[1..])?;
                 Ok(Self::SE(val.into()))
+            }
+            Some(token) if token.starts_with(b":") => {
+                let num = utils::parse_i64(&token[1..])?;
+                Ok(Self::I(num))
             }
             Some(token) if token == b"$-1" => Ok(Self::BS(None)),
             Some(token) if token.starts_with(b"$") => {

@@ -21,6 +21,7 @@ pub enum Command {
     },
     ConfigGet(String),
     Keys,
+    Wait,
     Info,
     ReplConf {
         key: String,
@@ -72,6 +73,7 @@ impl Command {
                     .collect(),
             )
             .into(),
+            Self::Wait => Resp::I(0).into(),
             Self::Info => {
                 let role = store.role()?;
                 let repl_id = store.repl_id()?;
@@ -165,6 +167,7 @@ impl Command {
                     _ => Self::Unknown,
                 },
                 "KEYS" => Self::Keys,
+                "WAIT" => Self::Wait,
                 "INFO" => Self::Info,
                 "REPLCONF" => {
                     let key = args
@@ -315,6 +318,14 @@ mod tests {
         let args = vec!["PSYNC".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Psync;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_wait_command() {
+        let args = vec!["WAIT".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Wait;
         assert_eq!(cmd, expected);
     }
 }
