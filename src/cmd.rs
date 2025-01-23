@@ -73,7 +73,10 @@ impl Command {
                     .collect(),
             )
             .into(),
-            Self::Wait => Resp::I(0).into(),
+            Self::Wait => {
+                let num = store.num_of_replicas()? as i64;
+                Resp::I(num).into()
+            }
             Self::Info => {
                 let role = store.role()?;
                 let repl_id = store.repl_id()?;

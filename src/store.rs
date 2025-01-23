@@ -129,6 +129,11 @@ impl Store {
         Ok(())
     }
 
+    pub fn num_of_replicas(&self) -> RedisResult<usize> {
+        let inner = self.lock()?;
+        Ok(inner.replicas.len())
+    }
+
     fn lock(&self) -> RedisResult<MutexGuard<'_, Inner>> {
         self.0
             .lock()
