@@ -23,6 +23,26 @@ impl<'a> Tokens<'a> {
         }
     }
 
+    pub(crate) fn proceed(&mut self, len: usize) -> Option<&'a [u8]> {
+        let current = self.current_position();
+        let bytes = *(self.cursor.get_ref());
+        let buf_size = bytes.len();
+
+        let len = std::cmp::min(len, buf_size - current);
+        seek(&mut self.cursor, len)?;
+        Some(&bytes[current..current + len])
+    }
+
+    pub(crate) fn starts_with(&self, bytes: &[u8]) -> bool {
+        if self.finished() {
+            false
+        } else {
+            let current = self.current_position();
+            let len = bytes.len();
+            *bytes == self.buf()[current..current + len]
+        }
+    }
+
     pub(crate) fn finished(&self) -> bool {
         self.current_position() >= self.buf().len()
     }
@@ -205,5 +225,17 @@ mod tests {
         assert!(tokens.finished());
         let item = tokens.next();
         assert_eq!(item, None);
+    }
+
+    #[test]
+    fn it_checks_starts() {
+        let bytes = b"one\r\ntwo";
+        let mut tokens = Tokens::new(bytes);
+
+        assert!(tokens.starts_with(b"o"));
+
+        let _ = tokens.next();
+
+        assert!(tokens.starts_with(b"t"));
     }
 }

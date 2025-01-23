@@ -1,16 +1,17 @@
 mod cmd;
 mod config;
+mod connection;
 mod error;
 mod message;
 mod rdb;
-pub mod replica;
 mod resp;
 mod store;
 mod utils;
 mod value;
 
-pub use cmd::Command;
+pub use cmd::{Command, CommandMode};
 pub use config::Config;
+pub use connection::Connection;
 pub use error::RedisError;
 pub use message::{IncomingMessage, OutgoingMessage};
 pub use resp::Resp;

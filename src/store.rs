@@ -12,17 +12,24 @@ struct Inner {
     db: HashMap<String, Value>,
     config: Config,
     replicas: Vec<TcpStream>,
+    ack: usize,
 }
 
 impl Store {
-    pub fn new(config: Config) -> RedisResult<Self> {
-        let rdb = Rdb::from_conf(&config)?;
+    pub fn new(config: &Config) -> RedisResult<Self> {
+        let rdb = Rdb::from_conf(config)?;
         let inner = Inner {
             db: rdb.db().clone(),
-            config,
+            config: config.clone(),
             replicas: vec![],
+            ack: 0,
         };
         Ok(Self(Mutex::new(inner)))
+    }
+
+    pub fn port(&self) -> RedisResult<u16> {
+        let inner = self.lock()?;
+        Ok(inner.config.port)
     }
 
     pub fn get(&self, key: &str) -> RedisResult<Option<String>> {
@@ -108,6 +115,17 @@ impl Store {
     pub fn save_replica_stream(&self, stream: &TcpStream) -> RedisResult<()> {
         let mut inner = self.lock()?;
         inner.replicas.push(stream.try_clone()?);
+        Ok(())
+    }
+
+    pub fn ack_offset(&self) -> RedisResult<usize> {
+        let inner = self.lock()?;
+        Ok(inner.ack)
+    }
+
+    pub fn add_ack_offset(&self, size: usize) -> RedisResult<()> {
+        let mut inner = self.lock()?;
+        inner.ack += size;
         Ok(())
     }
 

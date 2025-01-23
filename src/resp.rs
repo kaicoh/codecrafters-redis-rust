@@ -59,6 +59,14 @@ impl Resp {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.serialize().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub(crate) fn from_tokens(tokens: &mut Tokens<'_>) -> RedisResult<Self> {
         match tokens.next() {
             Some(token) if token.starts_with(b"+") => {

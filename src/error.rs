@@ -27,6 +27,9 @@ pub enum RedisError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Receive error: {0}")]
+    Receive(#[from] std::sync::mpsc::RecvError),
+
     #[error("{0}")]
     Other(#[from] anyhow::Error),
 }

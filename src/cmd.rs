@@ -1,6 +1,12 @@
 use super::{OutgoingMessage, RedisError, RedisResult, Resp, Store};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CommandMode {
+    Normal,
+    Sync,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Ping,
@@ -30,7 +36,9 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Arc<Store>) -> RedisResult<OutgoingMessage> {
+    pub fn run(self, store: Arc<Store>, mode: CommandMode) -> RedisResult<OutgoingMessage> {
+        let should_return = self.return_message(mode);
+
         let message: OutgoingMessage = match self {
             Self::Ping => Resp::SS("PONG".into()).into(),
             Self::Echo(val) => Resp::BS(Some(val)).into(),
@@ -77,7 +85,7 @@ impl Command {
                 "GETACK" => Resp::A(vec![
                     Resp::BS(Some("REPLCONF".into())),
                     Resp::BS(Some("ACK".into())),
-                    Resp::BS(Some("0".into())),
+                    Resp::BS(Some(format!("{}", store.ack_offset()?))),
                 ])
                 .into(),
                 _ => Resp::SS("OK".into()).into(),
@@ -100,7 +108,12 @@ impl Command {
                 return Err(RedisError::UnknownCommand);
             }
         };
-        Ok(message)
+
+        if should_return {
+            Ok(message)
+        } else {
+            Ok(OutgoingMessage::empty())
+        }
     }
 
     fn from_args(args: Vec<String>) -> RedisResult<Self> {
@@ -176,6 +189,14 @@ impl Command {
 
     pub fn store_connection(&self) -> bool {
         matches!(self, Self::Psync)
+    }
+
+    fn return_message(&self, mode: CommandMode) -> bool {
+        if mode == CommandMode::Sync {
+            matches!(self, Self::Info | Self::ReplConf { .. })
+        } else {
+            true
+        }
     }
 }
 
