@@ -34,10 +34,8 @@ impl IncomingMessage {
             Ok(Self::Resp(resp))
         } else if tokens.starts_with(b"$") {
             // Incoming message as RDB is like "$<size>\r\n<contents>".
-            let size = tokens.next();
-            eprintln!("Rdb size: {:?}", size.map(String::from_utf8_lossy));
-
-            let size = size
+            let size = tokens
+                .next()
                 .map(|token| utils::parse_usize(&token[1..]))
                 .transpose()?
                 .ok_or(anyhow::anyhow!("Failed to parse RDB file size"))?;
@@ -45,9 +43,8 @@ impl IncomingMessage {
             let contents = tokens
                 .proceed(size)
                 .ok_or(anyhow::anyhow!("Failed to get RDB file contents"))?;
-            let rdb = Rdb::new(contents);
 
-            Ok(Self::Rdb(rdb))
+            Ok(Self::Rdb(Rdb::new(contents)))
         } else {
             Err(anyhow::anyhow!("Neither RESP nor RDB parsed").into())
         }
