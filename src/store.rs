@@ -1,8 +1,7 @@
-use super::{message::OutgoingMessage, rdb::Rdb, value::Value, Config, RedisError, RedisResult};
+use super::{message::OutgoingMessage, rdb::Rdb, value::Value, Config, RedisResult};
 use std::collections::HashMap;
-use std::net::TcpStream;
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
+use tokio::sync::{mpsc::Sender, Mutex, MutexGuard};
 
 #[derive(Debug)]
 pub struct Store(Mutex<Inner>);
@@ -11,7 +10,7 @@ pub struct Store(Mutex<Inner>);
 struct Inner {
     db: HashMap<String, Value>,
     config: Config,
-    replicas: Vec<TcpStream>,
+    replicas: Vec<Sender<Vec<u8>>>,
     ack: usize,
 }
 
@@ -27,14 +26,14 @@ impl Store {
         Ok(Self(Mutex::new(inner)))
     }
 
-    pub fn port(&self) -> RedisResult<u16> {
-        let inner = self.lock()?;
-        Ok(inner.config.port)
+    pub async fn port(&self) -> u16 {
+        let inner = self.lock().await;
+        inner.config.port
     }
 
-    pub fn get(&self, key: &str) -> RedisResult<Option<String>> {
-        let mut inner = self.lock()?;
-        let value = match inner.db.get(key) {
+    pub async fn get(&self, key: &str) -> Option<String> {
+        let mut inner = self.lock().await;
+        match inner.db.get(key) {
             Some(v) => {
                 if v.expired() {
                     inner.db.remove(key);
@@ -44,63 +43,67 @@ impl Store {
                 }
             }
             _ => None,
-        };
-        Ok(value)
+        }
     }
 
-    pub fn keys(&self) -> RedisResult<Vec<String>> {
-        let inner = self.lock()?;
-        let keys: Vec<String> = inner.db.keys().map(|v| v.to_string()).collect();
-        Ok(keys)
+    pub async fn keys(&self) -> Vec<String> {
+        let inner = self.lock().await;
+        inner.db.keys().map(|v| v.to_string()).collect()
     }
 
-    pub fn set(&self, key: &str, value: String, exp: Option<u64>) -> RedisResult<()> {
-        let mut inner = self.lock()?;
+    pub async fn set(&self, key: &str, value: String, exp: Option<u64>) {
+        let mut inner = self.lock().await;
         let value = Value::String {
             value,
             exp: exp.map(|n| SystemTime::now() + Duration::from_millis(n)),
         };
         inner.db.insert(key.into(), value.clone());
 
-        for stream in inner.replicas.iter_mut() {
-            let msg: OutgoingMessage = value.to_resp(key)?.into();
+        let msg: OutgoingMessage = match value.to_resp(key) {
+            Ok(resp) => resp.into(),
+            Err(err) => {
+                eprintln!("Failed to build message: {err}");
+                return;
+            }
+        };
 
-            if let Err(err) = msg.write_to(stream) {
-                eprintln!("Failed to sync replica. {err}");
+        for msg in msg.into_iter() {
+            for tx in inner.replicas.iter() {
+                if let Err(err) = tx.send(msg.clone()).await {
+                    eprintln!("Error sending message to replica. {err}");
+                }
             }
         }
-        Ok(())
     }
 
-    pub fn rdb_dir(&self) -> RedisResult<Option<String>> {
-        let inner = self.lock()?;
-        Ok(inner.config.dir.clone())
+    pub async fn rdb_dir(&self) -> Option<String> {
+        let inner = self.lock().await;
+        inner.config.dir.clone()
     }
 
-    pub fn rdb_dbfilename(&self) -> RedisResult<Option<String>> {
-        let inner = self.lock()?;
-        Ok(inner.config.dbfilename.clone())
+    pub async fn rdb_dbfilename(&self) -> Option<String> {
+        let inner = self.lock().await;
+        inner.config.dbfilename.clone()
     }
 
-    pub fn role(&self) -> RedisResult<&str> {
-        let inner = self.lock()?;
-        let role = match inner.config.master {
+    pub async fn role(&self) -> &str {
+        let inner = self.lock().await;
+        match inner.config.master {
             Some(_) => "slave",
             None => "master",
-        };
-        Ok(role)
+        }
     }
 
-    pub fn repl_id(&self) -> RedisResult<&str> {
-        Ok("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb")
+    pub fn repl_id(&self) -> &str {
+        "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
     }
 
-    pub fn repl_offset(&self) -> RedisResult<usize> {
-        Ok(0)
+    pub fn repl_offset(&self) -> usize {
+        0
     }
 
-    pub fn rdb(&self, _offset: usize) -> RedisResult<Vec<u8>> {
-        let empty_rdb = vec![
+    pub fn rdb(&self, _offset: usize) -> Vec<u8> {
+        vec![
             0x52, 0x45, 0x44, 0x49, 0x53, 0x30, 0x30, 0x31, 0x31, 0xfa, 0x09, 0x72, 0x65, 0x64,
             0x69, 0x73, 0x2d, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2e, 0x32, 0x2e, 0x30, 0xfa, 0x0a,
             0x72, 0x65, 0x64, 0x69, 0x73, 0x2d, 0x62, 0x69, 0x74, 0x73, 0xc0, 0x40, 0xfa, 0x05,
@@ -108,35 +111,30 @@ impl Store {
             0x65, 0x64, 0x2d, 0x6d, 0x65, 0x6d, 0xc2, 0xb0, 0xc4, 0x10, 0x00, 0xfa, 0x08, 0x61,
             0x6f, 0x66, 0x2d, 0x62, 0x61, 0x73, 0x65, 0xc0, 0x00, 0xff, 0xf0, 0x6e, 0x3b, 0xfe,
             0xc0, 0xff, 0x5a, 0xa2,
-        ];
-        Ok(empty_rdb)
+        ]
     }
 
-    pub fn save_replica_stream(&self, stream: &TcpStream) -> RedisResult<()> {
-        let mut inner = self.lock()?;
-        inner.replicas.push(stream.try_clone()?);
-        Ok(())
+    pub async fn subscribe(&self, tx: Sender<Vec<u8>>) {
+        let mut inner = self.lock().await;
+        inner.replicas.push(tx);
     }
 
-    pub fn ack_offset(&self) -> RedisResult<usize> {
-        let inner = self.lock()?;
-        Ok(inner.ack)
+    pub async fn ack_offset(&self) -> usize {
+        let inner = self.lock().await;
+        inner.ack
     }
 
-    pub fn add_ack_offset(&self, size: usize) -> RedisResult<()> {
-        let mut inner = self.lock()?;
+    pub async fn add_ack_offset(&self, size: usize) {
+        let mut inner = self.lock().await;
         inner.ack += size;
-        Ok(())
     }
 
-    pub fn num_of_replicas(&self) -> RedisResult<usize> {
-        let inner = self.lock()?;
-        Ok(inner.replicas.len())
+    pub async fn num_of_replicas(&self) -> usize {
+        let inner = self.lock().await;
+        inner.replicas.len()
     }
 
-    fn lock(&self) -> RedisResult<MutexGuard<'_, Inner>> {
-        self.0
-            .lock()
-            .map_err(|err| RedisError::Lock(format!("{err}")))
+    async fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().await
     }
 }

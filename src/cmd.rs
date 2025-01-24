@@ -37,25 +37,26 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub fn run(self, store: Arc<Store>, mode: CommandMode) -> RedisResult<OutgoingMessage> {
+    pub async fn run(self, store: Arc<Store>, mode: CommandMode) -> RedisResult<OutgoingMessage> {
         let should_return = self.return_message(mode);
 
         let message: OutgoingMessage = match self {
             Self::Ping => Resp::SS("PONG".into()).into(),
             Self::Echo(val) => Resp::BS(Some(val)).into(),
             Self::Get { key } => store
-                .get(&key)?
+                .get(&key)
+                .await
                 .map(|v| Resp::BS(Some(v)))
                 .unwrap_or(Resp::BS(None))
                 .into(),
-            Self::Set { key, value, exp } => store
-                .set(&key, value, exp)
-                .map(|_| Resp::SS("OK".into()))?
-                .into(),
+            Self::Set { key, value, exp } => {
+                store.set(&key, value, exp).await;
+                Resp::SS("OK".into()).into()
+            }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
-                    "dir" => store.rdb_dir()?,
-                    "dbfilename" => store.rdb_dbfilename()?,
+                    "dir" => store.rdb_dir().await,
+                    "dbfilename" => store.rdb_dbfilename().await,
                     _ => None,
                 };
 
@@ -67,20 +68,21 @@ impl Command {
             }
             Self::Keys => Resp::A(
                 store
-                    .keys()?
+                    .keys()
+                    .await
                     .into_iter()
                     .map(|v| Resp::BS(Some(v)))
                     .collect(),
             )
             .into(),
             Self::Wait => {
-                let num = store.num_of_replicas()? as i64;
+                let num = store.num_of_replicas().await as i64;
                 Resp::I(num).into()
             }
             Self::Info => {
-                let role = store.role()?;
-                let repl_id = store.repl_id()?;
-                let repl_offset = store.repl_offset()?;
+                let role = store.role().await;
+                let repl_id = store.repl_id();
+                let repl_offset = store.repl_offset();
                 Resp::BS(Some(format!(
                     "role:{role}\r\nmaster_repl_offset:{repl_offset}\r\nmaster_replid:{repl_id}"
                 )))
@@ -90,17 +92,17 @@ impl Command {
                 "GETACK" => Resp::A(vec![
                     Resp::BS(Some("REPLCONF".into())),
                     Resp::BS(Some("ACK".into())),
-                    Resp::BS(Some(format!("{}", store.ack_offset()?))),
+                    Resp::BS(Some(format!("{}", store.ack_offset().await))),
                 ])
                 .into(),
                 _ => Resp::SS("OK".into()).into(),
             },
             Self::Psync => {
-                let repl_id = store.repl_id()?;
-                let repl_offset = store.repl_offset()?;
+                let repl_id = store.repl_id();
+                let repl_offset = store.repl_offset();
 
                 let order = Resp::SS(format!("FULLRESYNC {repl_id} {repl_offset}"));
-                let rdb = store.rdb(repl_offset)?;
+                let rdb = store.rdb(repl_offset);
                 let rdb_serialized: Vec<u8> = format!("${}\r\n", rdb.len())
                     .into_bytes()
                     .into_iter()

@@ -1,38 +1,32 @@
 use redis_starter_rust as rss;
 use rss::{CommandMode, Config, Connection, RedisResult, Store};
 use std::env;
-use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
     let config = Config::new(args);
 
-    if let Err(err) = serve(config) {
+    if let Err(err) = serve(config).await {
         eprintln!("{err}");
     }
 }
 
-fn serve(config: Config) -> RedisResult<()> {
-    let listener = TcpListener::bind(config.socket_addr())?;
+async fn serve(config: Config) -> RedisResult<()> {
+    let listener = TcpListener::bind(config.socket_addr()).await?;
     let store = Arc::new(Store::new(&config)?);
 
     if let Some(addr) = config.master_addr() {
-        let stream = TcpStream::connect(addr)?;
+        let stream = TcpStream::connect(addr).await?;
         let conn = Connection::new(stream, CommandMode::Sync);
-        conn.start_streaming(&store)?;
+        conn.start_streaming(&store).await?;
     }
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let conn = Connection::new(stream, CommandMode::Normal);
-                conn.start_streaming(&store)?;
-            }
-            Err(err) => {
-                eprintln!("Failed to get TCP stream: {err}");
-            }
-        }
+    while let Ok((stream, _)) = listener.accept().await {
+        let conn = Connection::new(stream, CommandMode::Normal);
+        conn.start_streaming(&store).await?;
     }
 
     Ok(())

@@ -4,8 +4,8 @@ use super::{
     RedisResult, Resp,
 };
 use std::fmt;
-use std::io::Write;
-use std::net::TcpStream;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 
 #[derive(Debug, Clone)]
 pub enum IncomingMessage {
@@ -72,9 +72,9 @@ impl OutgoingMessage {
         Self(vec![])
     }
 
-    pub fn write_to(self, stream: &mut TcpStream) -> std::io::Result<()> {
+    pub async fn write_to(self, stream: &mut TcpStream) -> std::io::Result<()> {
         for bytes in self.into_iter() {
-            stream.write_all(&bytes)?;
+            stream.write_all(&bytes).await?;
         }
         Ok(())
     }
