@@ -1,4 +1,4 @@
-use super::{Command, CommandMode, IncomingMessage, RedisResult, Resp, Store, BUF_SIZE};
+use super::{Command, CommandMode, Context, IncomingMessage, RedisResult, Resp, Store, BUF_SIZE};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
@@ -33,8 +33,8 @@ impl Connection {
                     match IncomingMessage::from_buffer(&buf[..size]) {
                         Ok(messages) => {
                             for message in messages {
-                                if let Err(err) = tx_in.send(message).await {
-                                    eprintln!("Failed to send incoming message: {err}");
+                                if tx_in.send(message).await.is_err() {
+                                    eprintln!("Receiver dropped");
                                     break;
                                 }
                             }
@@ -64,6 +64,8 @@ impl Connection {
             eprintln!("Channel closed. Stop reading bytes from {addr}");
         });
 
+        let ctx = Context::new(mode, addr);
+
         tokio::spawn(async move {
             while let Some(msg) = rx_in.recv().await {
                 match msg {
@@ -73,11 +75,11 @@ impl Connection {
                         match Command::new(resp) {
                             Ok(cmd) => {
                                 if cmd.store_connection() {
-                                    store.subscribe(tx_by.clone()).await;
+                                    store.subscribe(addr, tx_by.clone()).await;
                                 }
 
                                 let msg =
-                                    cmd.run(Arc::clone(&store), mode)
+                                    cmd.run(Arc::clone(&store), ctx)
                                         .await
                                         .unwrap_or_else(|err| {
                                             eprintln!("Failed to run command: {err}");
@@ -85,8 +87,9 @@ impl Connection {
                                         });
 
                                 for bytes in msg.into_iter() {
-                                    if let Err(err) = tx_by.send(bytes).await {
-                                        eprintln!("Failed to send data: {err}");
+                                    if tx_by.send(bytes).await.is_err() {
+                                        eprintln!("Receiver dropped");
+                                        break;
                                     }
                                 }
 

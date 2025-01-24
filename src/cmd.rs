@@ -1,5 +1,17 @@
 use super::{OutgoingMessage, RedisError, RedisResult, Resp, Store};
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Context {
+    mode: CommandMode,
+    addr: SocketAddr,
+}
+
+impl Context {
+    pub fn new(mode: CommandMode, addr: SocketAddr) -> Self {
+        Self { mode, addr }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CommandMode {
@@ -21,7 +33,10 @@ pub enum Command {
     },
     ConfigGet(String),
     Keys,
-    Wait,
+    Wait {
+        num_replicas: usize,
+        exp: u64,
+    },
     Info,
     ReplConf {
         key: String,
@@ -37,7 +52,8 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub async fn run(self, store: Arc<Store>, mode: CommandMode) -> RedisResult<OutgoingMessage> {
+    pub async fn run(self, store: Arc<Store>, ctx: Context) -> RedisResult<OutgoingMessage> {
+        let Context { mode, addr } = ctx;
         let should_return = self.return_message(mode);
 
         let message: OutgoingMessage = match self {
@@ -75,9 +91,9 @@ impl Command {
                     .collect(),
             )
             .into(),
-            Self::Wait => {
-                let num = store.num_of_replicas().await as i64;
-                Resp::I(num).into()
+            Self::Wait { num_replicas, exp } => {
+                let synced = store.wait(num_replicas, exp).await;
+                Resp::I(synced).into()
             }
             Self::Info => {
                 let role = store.role().await;
@@ -88,13 +104,18 @@ impl Command {
                 )))
                 .into()
             }
-            Self::ReplConf { key, .. } => match key.to_uppercase().as_str() {
+            Self::ReplConf { key, value } => match key.to_uppercase().as_str() {
                 "GETACK" => Resp::A(vec![
                     Resp::BS(Some("REPLCONF".into())),
                     Resp::BS(Some("ACK".into())),
                     Resp::BS(Some(format!("{}", store.ack_offset().await))),
                 ])
                 .into(),
+                "ACK" => {
+                    let ack = value.parse::<usize>()?;
+                    store.receive_replica_ack(addr, ack).await;
+                    OutgoingMessage::empty()
+                }
                 _ => Resp::SS("OK".into()).into(),
             },
             Self::Psync => {
@@ -172,7 +193,17 @@ impl Command {
                     _ => Self::Unknown,
                 },
                 "KEYS" => Self::Keys,
-                "WAIT" => Self::Wait,
+                "WAIT" => {
+                    let num_replicas = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 2, got: 0 })?
+                        .parse::<usize>()?;
+                    let exp = args
+                        .get(2)
+                        .ok_or(RedisError::LackOfArgs { need: 2, got: 1 })?
+                        .parse::<u64>()?;
+                    Self::Wait { num_replicas, exp }
+                }
                 "INFO" => Self::Info,
                 "REPLCONF" => {
                     let key = args
@@ -328,9 +359,12 @@ mod tests {
 
     #[test]
     fn it_parses_wait_command() {
-        let args = vec!["WAIT".to_string()];
+        let args = vec!["WAIT".to_string(), "7".to_string(), "500".to_string()];
         let cmd = Command::from_args(args).unwrap();
-        let expected = Command::Wait;
+        let expected = Command::Wait {
+            num_replicas: 7,
+            exp: 500,
+        };
         assert_eq!(cmd, expected);
     }
 }

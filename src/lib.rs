@@ -9,7 +9,7 @@ mod store;
 mod utils;
 mod value;
 
-pub use cmd::{Command, CommandMode};
+pub use cmd::{Command, CommandMode, Context};
 pub use config::Config;
 pub use connection::Connection;
 pub use error::RedisError;
