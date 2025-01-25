@@ -1,7 +1,4 @@
-use super::{
-    value::{StreamEntry, Value},
-    OutgoingMessage, RedisError, RedisResult, Resp, Store,
-};
+use super::{value::Value, OutgoingMessage, RedisError, RedisResult, Resp, Store};
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -92,9 +89,14 @@ impl Command {
                 .unwrap_or(Resp::SS("none".into()))
                 .into(),
             Self::Xadd { key, id, values } => {
-                let entry = StreamEntry::new(&id, values);
-                store.set_stream(&key, entry).await;
-                Resp::BS(Some(id)).into()
+                match store.set_stream(&key, id.clone(), values).await {
+                    Ok(_) => Resp::BS(Some(id)).into(),
+                    Err(RedisError::InvalidStreamEntryId00) => Resp::SE("ERR The ID specified in XADD must be greater than 0-0".into()).into(),
+                    Err(RedisError::SmallerStreamEntryId) => Resp::SE("ERR The ID specified in XADD is equal or smaller than the target stream top item".into()).into(),
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {

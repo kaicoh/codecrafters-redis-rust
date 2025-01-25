@@ -3,7 +3,7 @@ mod replica;
 use super::{
     message::OutgoingMessage,
     rdb::Rdb,
-    value::{StreamEntry, Value},
+    value::{RedisStream, StreamEntry, Value},
     Config, RedisResult, Resp,
 };
 use replica::{Replica, WaitSignal};
@@ -67,28 +67,30 @@ impl Store {
         self.send_to_replicas(msg).await
     }
 
-    pub async fn set_stream(&self, key: &str, entry: StreamEntry) {
-        let mut entries = match self.get(key).await {
-            Some(Value::Stream(mut entries)) => {
-                if let Some(pos) = entries.iter().position(|e| e.id() == entry.id()) {
-                    entries.swap_remove(pos);
-                }
-                entries
+    pub async fn set_stream(
+        &self,
+        key: &str,
+        id: String,
+        values: HashMap<String, String>,
+    ) -> RedisResult<()> {
+        let entry = StreamEntry::new(id, values)?;
+
+        let value = match self.get(key).await {
+            Some(Value::Stream(mut stream)) => {
+                stream.push(entry.clone())?;
+                Value::Stream(stream)
             }
-            None => vec![],
+            None => Value::Stream(RedisStream::new(entry.clone())),
             _ => {
-                eprintln!("Key {key} is not a stream");
-                return;
+                return Err(anyhow::anyhow!("Key {key} is not a stream").into());
             }
         };
-        entries.push(entry.clone());
-        entries.sort();
-
-        let value = Value::Stream(entries);
         self.set(key, value).await;
 
         let msg = msg_set_stream(key, entry);
         self.send_to_replicas(msg).await;
+
+        Ok(())
     }
 
     pub async fn rdb_dir(&self) -> Option<String> {
@@ -285,7 +287,7 @@ fn msg_set_string(key: &str, value: String, exp: Option<u64>) -> OutgoingMessage
 }
 
 fn msg_set_stream(key: &str, entry: StreamEntry) -> OutgoingMessage {
-    let mut tokens: Vec<String> = vec!["XADD".into(), key.into(), entry.id().into()];
+    let mut tokens: Vec<String> = vec!["XADD".into(), key.into(), format!("{}", entry.id())];
     for (key, value) in entry.values().iter() {
         tokens.push(key.into());
         tokens.push(value.into());

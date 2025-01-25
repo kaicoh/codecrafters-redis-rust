@@ -1,15 +1,16 @@
 mod stream;
-pub use stream::StreamEntry;
+pub use stream::{RedisStream, StreamEntry};
 
+use super::{RedisError, RedisResult};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     String {
         value: String,
         exp: Option<SystemTime>,
     },
-    Stream(Vec<StreamEntry>),
+    Stream(RedisStream),
 }
 
 impl Value {
