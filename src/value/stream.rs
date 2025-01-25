@@ -159,6 +159,7 @@ pub enum StreamEntryIdFactor {
     ValidId(u64, u64),
     Timestamp(u64),
     FromBeginning,
+    ToEnd,
 }
 
 impl StreamEntryIdFactor {
@@ -193,6 +194,7 @@ impl StreamEntryIdFactor {
             Self::FromBeginning => {
                 Err(anyhow::anyhow!("\"-\" cannot be used as stream entry id").into())
             }
+            Self::ToEnd => Err(anyhow::anyhow!("\"+\" cannot be used as stream entry id").into()),
         }
     }
 
@@ -201,6 +203,10 @@ impl StreamEntryIdFactor {
             Self::ValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
             Self::Timestamp(0) | Self::FromBeginning => Ok(StreamEntryId(0, 1)),
             Self::Timestamp(t0) => Ok(StreamEntryId(*t0, 0)),
+            Self::ToEnd => Err(anyhow::anyhow!(
+                "\"+\" cannot be used as the start of stream entry id range"
+            )
+            .into()),
         }
     }
 
@@ -212,6 +218,7 @@ impl StreamEntryIdFactor {
                 "\"-\" cannot be used as the end of stream entry id range"
             )
             .into()),
+            Self::ToEnd => Ok(StreamEntryId(u64::MAX, u64::MAX)),
         }
     }
 }
@@ -230,6 +237,10 @@ impl TryFrom<String> for StreamEntryIdFactor {
 
         if value.as_str() == "-" {
             return Ok(Self::FromBeginning);
+        }
+
+        if value.as_str() == "+" {
+            return Ok(Self::ToEnd);
         }
 
         let mut tokens = value.split('-');
