@@ -25,12 +25,13 @@ impl RedisStream {
         &self,
         start: StreamEntryIdFactor,
         end: StreamEntryIdFactor,
-    ) -> impl Iterator<Item = &StreamEntry> {
-        let start = start.as_start();
-        let end = end.as_end();
-        self.0
+    ) -> RedisResult<impl Iterator<Item = &StreamEntry>> {
+        let start = start.as_start()?;
+        let end = end.as_end()?;
+        Ok(self
+            .0
             .iter()
-            .filter(move |e| start <= e.id() && e.id() <= end)
+            .filter(move |e| start <= e.id() && e.id() <= end))
     }
 
     fn valid_id(&self, id: StreamEntryId) -> bool {
@@ -157,6 +158,7 @@ impl Ord for StreamEntryId {
 pub enum StreamEntryIdFactor {
     ValidId(u64, u64),
     Timestamp(u64),
+    FromBeginning,
 }
 
 impl StreamEntryIdFactor {
@@ -188,21 +190,28 @@ impl StreamEntryIdFactor {
                     Ok(id)
                 }
             },
+            Self::FromBeginning => {
+                Err(anyhow::anyhow!("\"-\" cannot be used as stream entry id").into())
+            }
         }
     }
 
-    pub fn as_start(&self) -> StreamEntryId {
+    pub fn as_start(&self) -> RedisResult<StreamEntryId> {
         match self {
-            Self::ValidId(t0, s0) => StreamEntryId(*t0, *s0),
-            Self::Timestamp(0) => StreamEntryId(0, 1),
-            Self::Timestamp(t0) => StreamEntryId(*t0, 0),
+            Self::ValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
+            Self::Timestamp(0) | Self::FromBeginning => Ok(StreamEntryId(0, 1)),
+            Self::Timestamp(t0) => Ok(StreamEntryId(*t0, 0)),
         }
     }
 
-    pub fn as_end(&self) -> StreamEntryId {
+    pub fn as_end(&self) -> RedisResult<StreamEntryId> {
         match self {
-            Self::ValidId(t0, s0) => StreamEntryId(*t0, *s0),
-            Self::Timestamp(t0) => StreamEntryId(*t0, u64::MAX),
+            Self::ValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
+            Self::Timestamp(t0) => Ok(StreamEntryId(*t0, u64::MAX)),
+            Self::FromBeginning => Err(anyhow::anyhow!(
+                "\"-\" cannot be used as the end of stream entry id range"
+            )
+            .into()),
         }
     }
 }
@@ -217,6 +226,10 @@ impl TryFrom<String> for StreamEntryIdFactor {
                 .map_err(|_| anyhow::anyhow!("SystemTime before UNIX EPOCH!"))?
                 .as_millis() as u64;
             return Ok(Self::Timestamp(now));
+        }
+
+        if value.as_str() == "-" {
+            return Ok(Self::FromBeginning);
         }
 
         let mut tokens = value.split('-');

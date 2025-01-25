@@ -112,7 +112,7 @@ impl Store {
             }
         };
         let mut entries: Vec<StreamEntry> = vec![];
-        for entry in stream.query(start, end) {
+        for entry in stream.query(start, end)? {
             entries.push(entry.clone());
         }
         Ok(entries)
