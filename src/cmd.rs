@@ -31,6 +31,9 @@ pub enum Command {
         value: String,
         exp: Option<u64>,
     },
+    Type {
+        key: String,
+    },
     ConfigGet(String),
     Keys,
     Wait {
@@ -69,6 +72,12 @@ impl Command {
                 store.set(&key, value, exp).await;
                 Resp::SS("OK".into()).into()
             }
+            Self::Type { key } => store
+                .get(&key)
+                .await
+                .map(|_| Resp::SS("string".into()))
+                .unwrap_or(Resp::SS("none".into()))
+                .into(),
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
                     "dir" => store.rdb_dir().await,
@@ -181,6 +190,13 @@ impl Command {
                         })
                         .and_then(|v| v.parse::<u64>().ok());
                     Self::Set { key, value, exp }
+                }
+                "TYPE" => {
+                    let key = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 1, got: 0 })?
+                        .to_string();
+                    Self::Type { key }
                 }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
@@ -364,6 +380,16 @@ mod tests {
         let expected = Command::Wait {
             num_replicas: 7,
             exp: 500,
+        };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_type_command() {
+        let args = vec!["TYPE".to_string(), "some_key".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Type {
+            key: "some_key".into(),
         };
         assert_eq!(cmd, expected);
     }
