@@ -1,4 +1,4 @@
-use super::{RedisError, RedisResult};
+use super::{RedisError, RedisResult, Resp};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -19,6 +19,18 @@ impl RedisStream {
         } else {
             Err(RedisError::SmallerStreamEntryId)
         }
+    }
+
+    pub fn query(
+        &self,
+        start: StreamEntryIdFactor,
+        end: StreamEntryIdFactor,
+    ) -> impl Iterator<Item = &StreamEntry> {
+        let start = start.as_start();
+        let end = end.as_end();
+        self.0
+            .iter()
+            .filter(move |e| start <= e.id() && e.id() <= end)
     }
 
     fn valid_id(&self, id: StreamEntryId) -> bool {
@@ -95,6 +107,27 @@ impl fmt::Display for StreamEntry {
     }
 }
 
+impl From<StreamEntry> for Resp {
+    fn from(entry: StreamEntry) -> Self {
+        let StreamEntry { id, values } = entry;
+
+        let mut elements: Vec<Resp> = vec![];
+
+        for (key, value) in values {
+            elements.push(Resp::BS(Some(key)));
+            elements.push(Resp::BS(Some(value)));
+        }
+
+        Resp::A(vec![Resp::BS(Some(format!("{id}"))), Resp::A(elements)])
+    }
+}
+
+impl From<Vec<StreamEntry>> for Resp {
+    fn from(resps: Vec<StreamEntry>) -> Self {
+        Resp::A(resps.into_iter().map(Resp::from).collect())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamEntryId(u64, u64);
 
@@ -155,6 +188,21 @@ impl StreamEntryIdFactor {
                     Ok(id)
                 }
             },
+        }
+    }
+
+    pub fn as_start(&self) -> StreamEntryId {
+        match self {
+            Self::ValidId(t0, s0) => StreamEntryId(*t0, *s0),
+            Self::Timestamp(0) => StreamEntryId(0, 1),
+            Self::Timestamp(t0) => StreamEntryId(*t0, 0),
+        }
+    }
+
+    pub fn as_end(&self) -> StreamEntryId {
+        match self {
+            Self::ValidId(t0, s0) => StreamEntryId(*t0, *s0),
+            Self::Timestamp(t0) => StreamEntryId(*t0, u64::MAX),
         }
     }
 }

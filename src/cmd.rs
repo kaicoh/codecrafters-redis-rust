@@ -40,6 +40,11 @@ pub enum Command {
         id: String,
         values: HashMap<String, String>,
     },
+    Xrange {
+        key: String,
+        start: String,
+        end: String,
+    },
     ConfigGet(String),
     Keys,
     Wait {
@@ -97,6 +102,10 @@ impl Command {
                         return Err(err);
                     }
                 }
+            }
+            Self::Xrange { key, start, end } => {
+                let entries = store.query_stream(&key, start, end).await?;
+                Resp::from(entries).into()
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
@@ -237,6 +246,22 @@ impl Command {
                     let values = into_hashmap(&args[3..]);
 
                     Self::Xadd { key, id, values }
+                }
+                "XRANGE" => {
+                    let key = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
+                        .to_string();
+                    let start = args
+                        .get(2)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 1 })?
+                        .to_string();
+                    let end = args
+                        .get(3)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 2 })?
+                        .to_string();
+
+                    Self::Xrange { key, start, end }
                 }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
@@ -462,6 +487,23 @@ mod tests {
             key: "stream_key".into(),
             id: "0-1".into(),
             values: [("foo".to_string(), "bar".to_string())].into(),
+        };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_xrange_command() {
+        let args = vec![
+            "XRANGE".to_string(),
+            "stream_key".to_string(),
+            "1526985054069".to_string(),
+            "1526985054079".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xrange {
+            key: "stream_key".into(),
+            start: "1526985054069".into(),
+            end: "1526985054079".into(),
         };
         assert_eq!(cmd, expected);
     }

@@ -1,7 +1,7 @@
 mod stream;
 pub use stream::{RedisStream, StreamEntry, StreamEntryId, StreamEntryIdFactor};
 
-use super::{RedisError, RedisResult};
+use super::{RedisError, RedisResult, Resp};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]

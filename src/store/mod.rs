@@ -95,6 +95,29 @@ impl Store {
         Ok(id)
     }
 
+    pub async fn query_stream(
+        &self,
+        key: &str,
+        start: String,
+        end: String,
+    ) -> RedisResult<Vec<StreamEntry>> {
+        let start = StreamEntryIdFactor::new(&start)?;
+        let end = StreamEntryIdFactor::new(&end)?;
+
+        let stream = match self.get(key).await {
+            Some(Value::Stream(stream)) => stream,
+            None => RedisStream::new(),
+            _ => {
+                return Err(anyhow::anyhow!("Key {key} is not a stream").into());
+            }
+        };
+        let mut entries: Vec<StreamEntry> = vec![];
+        for entry in stream.query(start, end) {
+            entries.push(entry.clone());
+        }
+        Ok(entries)
+    }
+
     pub async fn rdb_dir(&self) -> Option<String> {
         let inner = self.lock().await;
         inner.config.dir.clone()
