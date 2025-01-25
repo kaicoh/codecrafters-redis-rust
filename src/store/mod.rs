@@ -1,6 +1,11 @@
 mod replica;
 
-use super::{message::OutgoingMessage, rdb::Rdb, value::Value, Config, RedisResult, Resp};
+use super::{
+    message::OutgoingMessage,
+    rdb::Rdb,
+    value::{StreamEntry, Value},
+    Config, RedisResult, Resp,
+};
 use replica::{Replica, WaitSignal};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -31,7 +36,7 @@ impl Store {
         inner.config.port
     }
 
-    pub async fn get(&self, key: &str) -> Option<String> {
+    pub async fn get(&self, key: &str) -> Option<Value> {
         let mut inner = self.lock().await;
         match inner.db.get(key) {
             Some(v) => {
@@ -39,7 +44,7 @@ impl Store {
                     inner.db.remove(key);
                     None
                 } else {
-                    Some(v.to_string())
+                    Some(v.clone())
                 }
             }
             _ => None,
@@ -51,27 +56,39 @@ impl Store {
         inner.db.keys().map(|v| v.to_string()).collect()
     }
 
-    pub async fn set(&self, key: &str, value: String, exp: Option<u64>) {
-        let mut inner = self.lock().await;
-        let value = Value::String {
-            value,
+    pub async fn set_string(&self, key: &str, value: String, exp: Option<u64>) {
+        let v = Value::String {
+            value: value.clone(),
             exp: exp.map(|n| SystemTime::now() + Duration::from_millis(n)),
         };
-        inner.db.insert(key.into(), value.clone());
+        self.set(key, v).await;
 
-        let msg: OutgoingMessage = match value.to_resp(key) {
-            Ok(resp) => resp.into(),
-            Err(err) => {
-                eprintln!("Failed to build message: {err}");
+        let msg = msg_set_string(key, value, exp);
+        self.send_to_replicas(msg).await
+    }
+
+    pub async fn set_stream(&self, key: &str, entry: StreamEntry) {
+        let mut entries = match self.get(key).await {
+            Some(Value::Stream(mut entries)) => {
+                if let Some(pos) = entries.iter().position(|e| e.id() == entry.id()) {
+                    entries.swap_remove(pos);
+                }
+                entries
+            }
+            None => vec![],
+            _ => {
+                eprintln!("Key {key} is not a stream");
                 return;
             }
         };
+        entries.push(entry.clone());
+        entries.sort();
 
-        for msg in msg.into_iter() {
-            for (_, replica) in inner.replicas.iter_mut() {
-                replica.send(msg.clone()).await
-            }
-        }
+        let value = Value::Stream(entries);
+        self.set(key, value).await;
+
+        let msg = msg_set_stream(key, entry);
+        self.send_to_replicas(msg).await;
     }
 
     pub async fn rdb_dir(&self) -> Option<String> {
@@ -140,6 +157,8 @@ impl Store {
     }
 
     pub async fn wait(&self, num_replicas: usize, exp: u64) -> i64 {
+        // NOTE:
+        // You have to release lock not to block any other actions.
         let (mut synced, mut rx) = {
             let mut inner = self.lock().await;
             let unsynced = inner.replicas.iter().filter_map(is_unsynced).count();
@@ -188,6 +207,20 @@ impl Store {
     async fn lock(&self) -> MutexGuard<'_, Inner> {
         self.0.lock().await
     }
+
+    async fn set(&self, key: &str, value: Value) {
+        let mut inner = self.lock().await;
+        inner.db.insert(key.into(), value);
+    }
+
+    async fn send_to_replicas(&self, msg: OutgoingMessage) {
+        let mut inner = self.0.lock().await;
+        for msg in msg.into_iter() {
+            for (_, replica) in inner.replicas.iter_mut() {
+                replica.send(msg.clone()).await
+            }
+        }
+    }
 }
 
 impl Inner {
@@ -232,4 +265,30 @@ fn is_unsynced_mut<'a>((_, replica): (&'a SocketAddr, &'a mut Replica)) -> Optio
     } else {
         None
     }
+}
+
+fn msg_set_string(key: &str, value: String, exp: Option<u64>) -> OutgoingMessage {
+    let resp: Resp = if let Some(exp) = exp {
+        vec![
+            "SET".into(),
+            format!("{key}"),
+            value,
+            "px".into(),
+            format!("{exp}"),
+        ]
+        .into()
+    } else {
+        vec!["SET".into(), format!("{key}"), value].into()
+    };
+
+    OutgoingMessage::from(resp)
+}
+
+fn msg_set_stream(key: &str, entry: StreamEntry) -> OutgoingMessage {
+    let mut tokens: Vec<String> = vec!["XADD".into(), key.into(), entry.id().into()];
+    for (key, value) in entry.values().iter() {
+        tokens.push(key.into());
+        tokens.push(value.into());
+    }
+    OutgoingMessage::from(Resp::from(tokens))
 }

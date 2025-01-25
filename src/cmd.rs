@@ -1,4 +1,8 @@
-use super::{OutgoingMessage, RedisError, RedisResult, Resp, Store};
+use super::{
+    value::{StreamEntry, Value},
+    OutgoingMessage, RedisError, RedisResult, Resp, Store,
+};
+use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,6 +38,11 @@ pub enum Command {
     Type {
         key: String,
     },
+    Xadd {
+        key: String,
+        id: String,
+        values: HashMap<String, String>,
+    },
     ConfigGet(String),
     Keys,
     Wait {
@@ -65,19 +74,28 @@ impl Command {
             Self::Get { key } => store
                 .get(&key)
                 .await
+                .and_then(|v| match v {
+                    Value::String { value, .. } => Some(value),
+                    _ => None,
+                })
                 .map(|v| Resp::BS(Some(v)))
                 .unwrap_or(Resp::BS(None))
                 .into(),
             Self::Set { key, value, exp } => {
-                store.set(&key, value, exp).await;
+                store.set_string(&key, value, exp).await;
                 Resp::SS("OK".into()).into()
             }
             Self::Type { key } => store
                 .get(&key)
                 .await
-                .map(|_| Resp::SS("string".into()))
+                .map(|value| Resp::SS(value.type_name().into()))
                 .unwrap_or(Resp::SS("none".into()))
                 .into(),
+            Self::Xadd { key, id, values } => {
+                let entry = StreamEntry::new(&id, values);
+                store.set_stream(&key, entry).await;
+                Resp::BS(Some(id)).into()
+            }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
                     "dir" => store.rdb_dir().await,
@@ -198,6 +216,26 @@ impl Command {
                         .to_string();
                     Self::Type { key }
                 }
+                "XADD" => {
+                    if args.len() < 5 {
+                        return Err(RedisError::LackOfArgs {
+                            need: 5,
+                            got: args.len(),
+                        });
+                    }
+
+                    let key = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 5, got: 0 })?
+                        .to_string();
+                    let id = args
+                        .get(2)
+                        .ok_or(RedisError::LackOfArgs { need: 5, got: 1 })?
+                        .to_string();
+                    let values = into_hashmap(&args[3..]);
+
+                    Self::Xadd { key, id, values }
+                }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
                         let key = args
@@ -269,6 +307,20 @@ fn command_args(message: Resp) -> Vec<String> {
             .collect(),
         _ => vec![],
     }
+}
+
+fn into_hashmap(values: &[String]) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+
+    for chunk in values.chunks(2) {
+        if chunk.len() == 2 {
+            let key = chunk.first().unwrap();
+            let value = chunk.get(1).unwrap();
+            map.insert(key.into(), value.into());
+        }
+    }
+
+    map
 }
 
 #[cfg(test)]
@@ -390,6 +442,24 @@ mod tests {
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Type {
             key: "some_key".into(),
+        };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_xadd_command() {
+        let args = vec![
+            "XADD".to_string(),
+            "stream_key".to_string(),
+            "0-1".to_string(),
+            "foo".to_string(),
+            "bar".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xadd {
+            key: "stream_key".into(),
+            id: "0-1".into(),
+            values: [("foo".to_string(), "bar".to_string())].into(),
         };
         assert_eq!(cmd, expected);
     }
