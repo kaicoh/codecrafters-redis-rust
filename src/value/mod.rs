@@ -1,5 +1,5 @@
 mod stream;
-pub use stream::{RedisStream, StreamEntry};
+pub use stream::{RedisStream, StreamEntry, StreamEntryId, StreamEntryIdFactor};
 
 use super::{RedisError, RedisResult};
 use std::time::SystemTime;

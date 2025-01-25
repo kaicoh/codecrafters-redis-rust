@@ -7,8 +7,8 @@ use std::fmt;
 pub struct RedisStream(Vec<StreamEntry>);
 
 impl RedisStream {
-    pub fn new(entry: StreamEntry) -> Self {
-        Self(vec![entry])
+    pub fn new() -> Self {
+        Self(vec![])
     }
 
     pub fn push(&mut self, entry: StreamEntry) -> RedisResult<()> {
@@ -44,6 +44,12 @@ impl fmt::Display for RedisStream {
     }
 }
 
+impl Default for RedisStream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamEntry {
     id: StreamEntryId,
@@ -51,11 +57,8 @@ pub struct StreamEntry {
 }
 
 impl StreamEntry {
-    pub fn new(id: String, values: HashMap<String, String>) -> RedisResult<Self> {
-        Ok(Self {
-            id: id.try_into()?,
-            values,
-        })
+    pub fn new(id: StreamEntryId, values: HashMap<String, String>) -> Self {
+        Self { id, values }
     }
 
     pub fn id(&self) -> StreamEntryId {
@@ -94,39 +97,6 @@ impl fmt::Display for StreamEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamEntryId(u64, u64);
 
-impl TryFrom<String> for StreamEntryId {
-    type Error = RedisError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let mut tokens = value.split('-');
-
-        let first = tokens
-            .next()
-            .ok_or(anyhow::anyhow!("invalid stream entry id"))?
-            .parse::<u64>()?;
-        let second = tokens
-            .next()
-            .ok_or(anyhow::anyhow!("invalid stream entry id"))?
-            .parse::<u64>()?;
-
-        if tokens.next().is_some() {
-            Err(anyhow::anyhow!("invalid stream entry id").into())
-        } else if first == 0 && second == 0 {
-            Err(RedisError::InvalidStreamEntryId00)
-        } else {
-            Ok(Self(first, second))
-        }
-    }
-}
-
-impl TryFrom<&str> for StreamEntryId {
-    type Error = RedisError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        value.to_string().try_into()
-    }
-}
-
 impl fmt::Display for StreamEntryId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}-{}", self.0, self.1)
@@ -145,6 +115,75 @@ impl Ord for StreamEntryId {
             self.1.cmp(&other.1)
         } else {
             self.0.cmp(&other.0)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum StreamEntryIdFactor {
+    ValidId(u64, u64),
+    Timestamp(u64),
+}
+
+impl StreamEntryIdFactor {
+    pub fn new(value: &str) -> RedisResult<Self> {
+        value.to_string().try_into()
+    }
+
+    pub fn try_into_id(self, stream: &RedisStream) -> RedisResult<StreamEntryId> {
+        match self {
+            Self::ValidId(t0, s0) => {
+                let id = StreamEntryId(t0, s0);
+
+                if stream.valid_id(id) {
+                    Ok(id)
+                } else {
+                    Err(RedisError::SmallerStreamEntryId)
+                }
+            }
+            Self::Timestamp(t0) => match stream.last_id() {
+                Some(StreamEntryId(t1, _)) if t0 < t1 => Err(RedisError::SmallerStreamEntryId),
+                Some(StreamEntryId(t1, s1)) if t0 == t1 => Ok(StreamEntryId(t1, s1 + 1)),
+                //_ => Ok(StreamEntryId(t0, 0)),
+                _ => {
+                    let id = if t0 == 0 {
+                        StreamEntryId(0, 1)
+                    } else {
+                        StreamEntryId(t0, 0)
+                    };
+                    Ok(id)
+                }
+            },
+        }
+    }
+}
+
+impl TryFrom<String> for StreamEntryIdFactor {
+    type Error = RedisError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let mut tokens = value.split('-');
+
+        let first = tokens
+            .next()
+            .ok_or(anyhow::anyhow!("invalid stream entry id"))?
+            .parse::<u64>()?;
+        let second = match tokens.next() {
+            Some("*") => {
+                return Ok(Self::Timestamp(first));
+            }
+            Some(token) => token.parse::<u64>()?,
+            None => {
+                return Err(anyhow::anyhow!("invalid stream entry id").into());
+            }
+        };
+
+        if tokens.next().is_some() {
+            Err(anyhow::anyhow!("invalid stream entry id").into())
+        } else if first == 0 && second == 0 {
+            Err(RedisError::InvalidStreamEntryId00)
+        } else {
+            Ok(Self::ValidId(first, second))
         }
     }
 }

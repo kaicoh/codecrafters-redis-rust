@@ -89,8 +89,8 @@ impl Command {
                 .unwrap_or(Resp::SS("none".into()))
                 .into(),
             Self::Xadd { key, id, values } => {
-                match store.set_stream(&key, id.clone(), values).await {
-                    Ok(_) => Resp::BS(Some(id)).into(),
+                match store.set_stream(&key, id, values).await {
+                    Ok(id) => Resp::BS(Some(format!("{id}"))).into(),
                     Err(RedisError::InvalidStreamEntryId00) => Resp::SE("ERR The ID specified in XADD must be greater than 0-0".into()).into(),
                     Err(RedisError::SmallerStreamEntryId) => Resp::SE("ERR The ID specified in XADD is equal or smaller than the target stream top item".into()).into(),
                     Err(err) => {

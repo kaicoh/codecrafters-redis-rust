@@ -3,7 +3,7 @@ mod replica;
 use super::{
     message::OutgoingMessage,
     rdb::Rdb,
-    value::{RedisStream, StreamEntry, Value},
+    value::{RedisStream, StreamEntry, StreamEntryId, StreamEntryIdFactor, Value},
     Config, RedisResult, Resp,
 };
 use replica::{Replica, WaitSignal};
@@ -72,25 +72,27 @@ impl Store {
         key: &str,
         id: String,
         values: HashMap<String, String>,
-    ) -> RedisResult<()> {
-        let entry = StreamEntry::new(id, values)?;
+    ) -> RedisResult<StreamEntryId> {
+        let id_factor = StreamEntryIdFactor::new(&id)?;
 
-        let value = match self.get(key).await {
-            Some(Value::Stream(mut stream)) => {
-                stream.push(entry.clone())?;
-                Value::Stream(stream)
-            }
-            None => Value::Stream(RedisStream::new(entry.clone())),
+        let mut stream = match self.get(key).await {
+            Some(Value::Stream(stream)) => stream,
+            None => RedisStream::new(),
             _ => {
                 return Err(anyhow::anyhow!("Key {key} is not a stream").into());
             }
         };
+        let id = id_factor.try_into_id(&stream)?;
+        let entry = StreamEntry::new(id, values);
+        stream.push(entry.clone())?;
+
+        let value = Value::Stream(stream);
         self.set(key, value).await;
 
         let msg = msg_set_stream(key, entry);
         self.send_to_replicas(msg).await;
 
-        Ok(())
+        Ok(id)
     }
 
     pub async fn rdb_dir(&self) -> Option<String> {
