@@ -2,6 +2,7 @@ use super::{RedisError, RedisResult};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct RedisStream(Vec<StreamEntry>);
@@ -162,6 +163,14 @@ impl TryFrom<String> for StreamEntryIdFactor {
     type Error = RedisError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.as_str() == "*" {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| anyhow::anyhow!("SystemTime before UNIX EPOCH!"))?
+                .as_millis() as u64;
+            return Ok(Self::Timestamp(now));
+        }
+
         let mut tokens = value.split('-');
 
         let first = tokens
