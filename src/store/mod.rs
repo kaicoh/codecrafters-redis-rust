@@ -116,9 +116,13 @@ impl Store {
         }
     }
 
-    pub async fn exec_transactions(&self, addr: SocketAddr) {
+    pub async fn drain_trans(&self, addr: SocketAddr) -> Vec<Command> {
         let mut inner = self.lock().await;
-        inner.transactions.remove(&addr);
+        inner
+            .transactions
+            .remove(&addr)
+            .map(|tran| tran.unwrap())
+            .unwrap_or_default()
     }
 
     pub async fn set_stream(

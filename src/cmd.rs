@@ -98,11 +98,45 @@ impl Command {
         let msg = if self.need_queue(&store, ctx.addr).await {
             store.queue(ctx.addr, self).await;
             Resp::SS("QUEUED".into()).into()
+        } else if matches!(self, Self::Exec) {
+            if store.is_queuing(ctx.addr).await {
+                let mut resps: Vec<Resp> = vec![];
+
+                for cmd in store.drain_trans(ctx.addr).await {
+                    match cmd.run(Arc::clone(&store), &mut ctx).await {
+                        Ok(Some(resp)) => {
+                            resps.push(resp);
+                        }
+                        Ok(None) => {
+                            println!("No return message");
+                        }
+                        Err(err) => {
+                            resps.push(Resp::from(err));
+                        }
+                    }
+                }
+
+                Resp::A(resps).into()
+            } else {
+                Resp::SE("ERR EXEC without MULTI".into()).into()
+            }
         } else {
-            self.run(store, &mut ctx).await.unwrap_or_else(|err| {
-                eprintln!("Failed to run command. {err}");
-                Resp::from(err).into()
-            })
+            let need_return = self.return_message(ctx.mode);
+
+            self.run(store, &mut ctx)
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("Failed to run command. {err}");
+                    Some(Resp::from(err))
+                })
+                .map(|v| {
+                    if need_return {
+                        OutgoingMessage::from(v)
+                    } else {
+                        OutgoingMessage::empty()
+                    }
+                })
+                .unwrap_or_else(OutgoingMessage::empty)
         };
 
         if let Some(sender) = ctx.sender {
@@ -112,57 +146,48 @@ impl Command {
         }
     }
 
-    pub async fn run(self, store: Arc<Store>, ctx: &mut Context) -> RedisResult<OutgoingMessage> {
-        let should_return = self.return_message(ctx.mode);
-
-        let message: OutgoingMessage = match self {
-            Self::Ping => Resp::SS("PONG".into()).into(),
-            Self::Echo(val) => Resp::BS(Some(val)).into(),
-            Self::Get { key } => store
-                .get_string(&key)
-                .await
-                .map(|v| Resp::BS(Some(v)))
-                .unwrap_or(Resp::BS(None))
-                .into(),
+    pub async fn run(self, store: Arc<Store>, ctx: &mut Context) -> RedisResult<Option<Resp>> {
+        let opt = match self {
+            Self::Ping => Some(Resp::SS("PONG".into())),
+            Self::Echo(val) => Some(Resp::BS(Some(val))),
+            Self::Get { key } => {
+                let value = store
+                    .get_string(&key)
+                    .await
+                    .map(|v| Resp::BS(Some(v)))
+                    .unwrap_or(Resp::BS(None));
+                Some(value)
+            }
             Self::Set { key, value, exp } => {
                 store.set_string(&key, value, exp).await;
-                Resp::SS("OK".into()).into()
+                Some(Resp::SS("OK".into()))
             }
             Self::Incr { key } => {
                 let num = store.increment(&key).await?;
-                Resp::I(num).into()
+                Some(Resp::I(num))
             }
-            Self::Type { key } => store
-                .get(&key)
-                .await
-                .map(|value| Resp::SS(value.type_name().into()))
-                .unwrap_or(Resp::SS("none".into()))
-                .into(),
+            Self::Type { key } => {
+                let value = store
+                    .get(&key)
+                    .await
+                    .map(|value| Resp::SS(value.type_name().into()))
+                    .unwrap_or(Resp::SS("none".into()));
+                Some(value)
+            }
             Self::Multi => {
                 store.start_queuing(ctx.addr).await;
-                Resp::SS("OK".into()).into()
-            },
-            Self::Exec => {
-                if store.is_queuing(ctx.addr).await {
-                    store.exec_transactions(ctx.addr).await;
-                    Resp::A(vec![]).into()
-                } else {
-                    Resp::SE("ERR EXEC without MULTI".into()).into()
-                }
+                Some(Resp::SS("OK".into()))
             }
             Self::Xadd { key, id, values } => {
-                match store.set_stream(&key, id, values).await {
-                    Ok(id) => Resp::BS(Some(format!("{id}"))).into(),
-                    Err(RedisError::InvalidStreamEntryId00) => Resp::SE("ERR The ID specified in XADD must be greater than 0-0".into()).into(),
-                    Err(RedisError::SmallerStreamEntryId) => Resp::SE("ERR The ID specified in XADD is equal or smaller than the target stream top item".into()).into(),
-                    Err(err) => {
-                        return Err(err);
-                    }
-                }
+                let resp = store
+                    .set_stream(&key, id, values)
+                    .await
+                    .map(|id| Resp::BS(Some(format!("{id}"))))?;
+                Some(resp)
             }
             Self::Xrange { key, start, end } => {
                 let entries = store.query_stream(&key, start, end).await?;
-                Resp::from(entries).into()
+                Some(Resp::from(entries))
             }
             Self::Xread { block, stream } => {
                 let stream = store.parse_find_stream_args(stream).await?;
@@ -173,9 +198,10 @@ impl Command {
                                 let store_cp = Arc::clone(&store);
                                 let stream_cp = stream.clone();
 
-                                let mut msg: Option<OutgoingMessage> = read_stream(store_cp, stream_cp)
-                                    .await
-                                    .map(|v| Resp::from(v).into());
+                                let mut msg: Option<OutgoingMessage> =
+                                    read_stream(store_cp, stream_cp)
+                                        .await
+                                        .map(|v| Resp::from(v).into());
 
                                 while msg.is_none() {
                                     // 1. Ask store to inform after adding any stream entry.
@@ -205,7 +231,7 @@ impl Command {
                                 }
                             });
                         }
-                        OutgoingMessage::empty()
+                        None
                     }
                     Some(milli) => {
                         if let Some(sender) = ctx.sender.take() {
@@ -223,14 +249,14 @@ impl Command {
                                 }
                             });
                         }
-                        OutgoingMessage::empty()
+                        None
                     }
                     _ => {
-                        read_stream(store, stream)
+                        let resp = read_stream(store, stream)
                             .await
                             .map(Resp::from)
-                            .unwrap_or(Resp::BS(None))
-                            .into()
+                            .unwrap_or(Resp::BS(None));
+                        Some(resp)
                     }
                 }
             }
@@ -241,47 +267,51 @@ impl Command {
                     _ => None,
                 };
 
-                Resp::A(vec![
+                let resp = Resp::A(vec![
                     Resp::BS(Some(key)),
                     val.map(|v| Resp::BS(Some(v))).unwrap_or(Resp::BS(None)),
-                ])
-                .into()
+                ]);
+                Some(resp)
             }
-            Self::Keys => Resp::A(
-                store
-                    .keys()
-                    .await
-                    .into_iter()
-                    .map(|v| Resp::BS(Some(v)))
-                    .collect(),
-            )
-            .into(),
+            Self::Keys => {
+                let resp = Resp::A(
+                    store
+                        .keys()
+                        .await
+                        .into_iter()
+                        .map(|v| Resp::BS(Some(v)))
+                        .collect(),
+                );
+                Some(resp)
+            }
             Self::Wait { num_replicas, exp } => {
                 let synced = store.wait(num_replicas, exp).await;
-                Resp::I(synced).into()
+                Some(Resp::I(synced))
             }
             Self::Info => {
                 let role = store.role().await;
                 let repl_id = store.repl_id();
                 let repl_offset = store.repl_offset();
-                Resp::BS(Some(format!(
+                let resp = Resp::BS(Some(format!(
                     "role:{role}\r\nmaster_repl_offset:{repl_offset}\r\nmaster_replid:{repl_id}"
-                )))
-                .into()
+                )));
+                Some(resp)
             }
             Self::ReplConf { key, value } => match key.to_uppercase().as_str() {
-                "GETACK" => Resp::A(vec![
-                    Resp::BS(Some("REPLCONF".into())),
-                    Resp::BS(Some("ACK".into())),
-                    Resp::BS(Some(format!("{}", store.ack_offset().await))),
-                ])
-                .into(),
+                "GETACK" => {
+                    let resp = Resp::A(vec![
+                        Resp::BS(Some("REPLCONF".into())),
+                        Resp::BS(Some("ACK".into())),
+                        Resp::BS(Some(format!("{}", store.ack_offset().await))),
+                    ]);
+                    Some(resp)
+                }
                 "ACK" => {
                     let ack = value.parse::<usize>()?;
                     store.receive_replica_ack(ctx.addr, ack).await;
-                    OutgoingMessage::empty()
+                    None
                 }
-                _ => Resp::SS("OK".into()).into(),
+                _ => Some(Resp::SS("OK".into())),
             },
             Self::Psync => {
                 let repl_id = store.repl_id();
@@ -295,18 +325,14 @@ impl Command {
                     .chain(rdb)
                     .collect();
 
-                OutgoingMessage::new(vec![order.serialize(), rdb_serialized])
+                Some(Resp::RAW(vec![order.serialize(), rdb_serialized]))
             }
             _ => {
                 return Err(RedisError::UnknownCommand);
             }
         };
 
-        if should_return {
-            Ok(message)
-        } else {
-            Ok(OutgoingMessage::empty())
-        }
+        Ok(opt)
     }
 
     fn from_args(args: Vec<String>) -> RedisResult<Self> {

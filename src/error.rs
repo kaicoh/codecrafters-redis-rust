@@ -27,10 +27,10 @@ pub enum RedisError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Invalid stream entry id 0-0")]
+    #[error("ERR The ID specified in XADD must be greater than 0-0")]
     InvalidStreamEntryId00,
 
-    #[error("Invalid stream entry id smaller than the top item")]
+    #[error("ERR The ID specified in XADD is equal or smaller than the target stream top item")]
     SmallerStreamEntryId,
 
     #[error("{0}")]

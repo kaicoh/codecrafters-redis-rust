@@ -16,6 +16,8 @@ pub enum Resp {
     BS(Option<String>),
     /// Array
     A(Vec<Resp>),
+    /// This is invalid RESP
+    RAW(Vec<Vec<u8>>),
 }
 
 impl fmt::Display for Resp {
@@ -33,6 +35,12 @@ impl fmt::Display for Resp {
                     .collect::<Vec<String>>()
                     .join(", ");
                 write!(f, "[{els}]")
+            }
+            Self::RAW(bytes) => {
+                for raw_bytes in bytes {
+                    write!(f, "{}", String::from_utf8_lossy(raw_bytes))?;
+                }
+                Ok(())
             }
         }
     }
@@ -60,6 +68,7 @@ impl Resp {
                     .chain(elements)
                     .collect()
             }
+            Self::RAW(bytes) => bytes.iter().flatten().copied().collect(),
         }
     }
 

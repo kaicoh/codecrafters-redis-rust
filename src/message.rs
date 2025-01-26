@@ -82,7 +82,10 @@ impl OutgoingMessage {
 
 impl From<Resp> for OutgoingMessage {
     fn from(resp: Resp) -> Self {
-        Self(vec![resp.serialize()])
+        match resp {
+            Resp::RAW(bytes) => Self(bytes),
+            _ => Self(vec![resp.serialize()]),
+        }
     }
 }
 
