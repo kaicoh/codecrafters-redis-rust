@@ -45,6 +45,11 @@ pub enum Command {
         start: String,
         end: String,
     },
+    Xread {
+        kind: String,
+        key: String,
+        start: String,
+    },
     ConfigGet(String),
     Keys,
     Wait {
@@ -106,6 +111,10 @@ impl Command {
             Self::Xrange { key, start, end } => {
                 let entries = store.query_stream(&key, start, end).await?;
                 Resp::from(entries).into()
+            }
+            Self::Xread { key, start, .. } => {
+                let entry = store.find_stream(&key, start).await?;
+                Resp::from((key, entry)).into()
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
@@ -262,6 +271,22 @@ impl Command {
                         .to_string();
 
                     Self::Xrange { key, start, end }
+                }
+                "XREAD" => {
+                    let kind = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
+                        .to_string();
+                    let key = args
+                        .get(2)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
+                        .to_string();
+                    let start = args
+                        .get(3)
+                        .ok_or(RedisError::LackOfArgs { need: 3, got: 1 })?
+                        .to_string();
+
+                    Self::Xread { kind, key, start }
                 }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
@@ -504,6 +529,23 @@ mod tests {
             key: "stream_key".into(),
             start: "1526985054069".into(),
             end: "1526985054079".into(),
+        };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_xread_command() {
+        let args = vec![
+            "XREAD".to_string(),
+            "stream".to_string(),
+            "stream_key".to_string(),
+            "1526985054069".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xread {
+            kind: "stream".into(),
+            key: "stream_key".into(),
+            start: "1526985054069".into(),
         };
         assert_eq!(cmd, expected);
     }

@@ -34,6 +34,11 @@ impl RedisStream {
             .filter(move |e| start <= e.id() && e.id() <= end))
     }
 
+    pub fn find(&self, start: StreamEntryIdFactor) -> RedisResult<Option<&StreamEntry>> {
+        let start = start.as_start()?;
+        Ok(self.0.iter().find(move |e| start < e.id()))
+    }
+
     fn valid_id(&self, id: StreamEntryId) -> bool {
         match self.last_id() {
             Some(last_id) => last_id < id,
@@ -129,6 +134,19 @@ impl From<Vec<StreamEntry>> for Resp {
     }
 }
 
+impl From<(String, Option<StreamEntry>)> for Resp {
+    fn from((key, entry): (String, Option<StreamEntry>)) -> Self {
+        let entry = match entry {
+            Some(entry) => Resp::from(entry),
+            None => Resp::A(vec![]),
+        };
+        Resp::A(vec![Resp::A(vec![
+            Resp::BS(Some(key)),
+            Resp::A(vec![entry]),
+        ])])
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamEntryId(u64, u64);
 
@@ -156,10 +174,10 @@ impl Ord for StreamEntryId {
 
 #[derive(Debug)]
 pub enum StreamEntryIdFactor {
-    ValidId(u64, u64),
+    MayValidId(u64, u64),
     Timestamp(u64),
-    FromBeginning,
-    ToEnd,
+    RangeFromBeginning,
+    RangeToEnd,
 }
 
 impl StreamEntryIdFactor {
@@ -169,7 +187,8 @@ impl StreamEntryIdFactor {
 
     pub fn try_into_id(self, stream: &RedisStream) -> RedisResult<StreamEntryId> {
         match self {
-            Self::ValidId(t0, s0) => {
+            Self::MayValidId(0, 0) => Err(RedisError::InvalidStreamEntryId00),
+            Self::MayValidId(t0, s0) => {
                 let id = StreamEntryId(t0, s0);
 
                 if stream.valid_id(id) {
@@ -191,19 +210,21 @@ impl StreamEntryIdFactor {
                     Ok(id)
                 }
             },
-            Self::FromBeginning => {
+            Self::RangeFromBeginning => {
                 Err(anyhow::anyhow!("\"-\" cannot be used as stream entry id").into())
             }
-            Self::ToEnd => Err(anyhow::anyhow!("\"+\" cannot be used as stream entry id").into()),
+            Self::RangeToEnd => {
+                Err(anyhow::anyhow!("\"+\" cannot be used as stream entry id").into())
+            }
         }
     }
 
     pub fn as_start(&self) -> RedisResult<StreamEntryId> {
         match self {
-            Self::ValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
-            Self::Timestamp(0) | Self::FromBeginning => Ok(StreamEntryId(0, 1)),
+            Self::MayValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
+            Self::Timestamp(0) | Self::RangeFromBeginning => Ok(StreamEntryId(0, 1)),
             Self::Timestamp(t0) => Ok(StreamEntryId(*t0, 0)),
-            Self::ToEnd => Err(anyhow::anyhow!(
+            Self::RangeToEnd => Err(anyhow::anyhow!(
                 "\"+\" cannot be used as the start of stream entry id range"
             )
             .into()),
@@ -212,13 +233,13 @@ impl StreamEntryIdFactor {
 
     pub fn as_end(&self) -> RedisResult<StreamEntryId> {
         match self {
-            Self::ValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
+            Self::MayValidId(t0, s0) => Ok(StreamEntryId(*t0, *s0)),
             Self::Timestamp(t0) => Ok(StreamEntryId(*t0, u64::MAX)),
-            Self::FromBeginning => Err(anyhow::anyhow!(
+            Self::RangeFromBeginning => Err(anyhow::anyhow!(
                 "\"-\" cannot be used as the end of stream entry id range"
             )
             .into()),
-            Self::ToEnd => Ok(StreamEntryId(u64::MAX, u64::MAX)),
+            Self::RangeToEnd => Ok(StreamEntryId(u64::MAX, u64::MAX)),
         }
     }
 }
@@ -236,11 +257,11 @@ impl TryFrom<String> for StreamEntryIdFactor {
         }
 
         if value.as_str() == "-" {
-            return Ok(Self::FromBeginning);
+            return Ok(Self::RangeFromBeginning);
         }
 
         if value.as_str() == "+" {
-            return Ok(Self::ToEnd);
+            return Ok(Self::RangeToEnd);
         }
 
         let mut tokens = value.split('-');
@@ -261,10 +282,8 @@ impl TryFrom<String> for StreamEntryIdFactor {
 
         if tokens.next().is_some() {
             Err(anyhow::anyhow!("invalid stream entry id").into())
-        } else if first == 0 && second == 0 {
-            Err(RedisError::InvalidStreamEntryId00)
         } else {
-            Ok(Self::ValidId(first, second))
+            Ok(Self::MayValidId(first, second))
         }
     }
 }

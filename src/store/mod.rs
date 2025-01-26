@@ -75,13 +75,7 @@ impl Store {
     ) -> RedisResult<StreamEntryId> {
         let id_factor = StreamEntryIdFactor::new(&id)?;
 
-        let mut stream = match self.get(key).await {
-            Some(Value::Stream(stream)) => stream,
-            None => RedisStream::new(),
-            _ => {
-                return Err(anyhow::anyhow!("Key {key} is not a stream").into());
-            }
-        };
+        let mut stream = self.get_stream(key).await?;
         let id = id_factor.try_into_id(&stream)?;
         let entry = StreamEntry::new(id, values);
         stream.push(entry.clone())?;
@@ -104,18 +98,17 @@ impl Store {
         let start = StreamEntryIdFactor::new(&start)?;
         let end = StreamEntryIdFactor::new(&end)?;
 
-        let stream = match self.get(key).await {
-            Some(Value::Stream(stream)) => stream,
-            None => RedisStream::new(),
-            _ => {
-                return Err(anyhow::anyhow!("Key {key} is not a stream").into());
-            }
-        };
+        let stream = self.get_stream(key).await?;
         let mut entries: Vec<StreamEntry> = vec![];
         for entry in stream.query(start, end)? {
             entries.push(entry.clone());
         }
         Ok(entries)
+    }
+
+    pub async fn find_stream(&self, key: &str, start: String) -> RedisResult<Option<StreamEntry>> {
+        let start = StreamEntryIdFactor::new(&start)?;
+        self.get_stream(key).await?.find(start).map(|v| v.cloned())
     }
 
     pub async fn rdb_dir(&self) -> Option<String> {
@@ -238,6 +231,14 @@ impl Store {
     async fn set(&self, key: &str, value: Value) {
         let mut inner = self.lock().await;
         inner.db.insert(key.into(), value);
+    }
+
+    async fn get_stream(&self, key: &str) -> RedisResult<RedisStream> {
+        match self.get(key).await {
+            Some(Value::Stream(stream)) => Ok(stream),
+            None => Ok(RedisStream::new()),
+            _ => Err(anyhow::anyhow!("Key {key} is not a stream").into()),
+        }
     }
 
     async fn send_to_replicas(&self, msg: OutgoingMessage) {
