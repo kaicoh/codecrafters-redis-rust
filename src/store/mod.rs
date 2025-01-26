@@ -78,7 +78,12 @@ impl Store {
     pub async fn increment(&self, key: &str) -> RedisResult<i64> {
         let (value, exp) = match self.get(key).await {
             Some(Value::String { value, exp }) => {
-                let value = (value.parse::<i64>()? + 1).to_string();
+                let num = value.parse::<i64>().map_err(|_| {
+                    RedisError::from(anyhow::anyhow!(
+                        "ERR value is not an integer or out of range"
+                    ))
+                })?;
+                let value = (num + 1).to_string();
                 let exp = exp.map(|time| {
                     time.duration_since(UNIX_EPOCH)
                         .expect("SystemTime before UNIX EPOCH!")
