@@ -57,6 +57,7 @@ pub enum Command {
     Type {
         key: String,
     },
+    Multi,
     Xadd {
         key: String,
         id: String,
@@ -131,6 +132,7 @@ impl Command {
                 .map(|value| Resp::SS(value.type_name().into()))
                 .unwrap_or(Resp::SS("none".into()))
                 .into(),
+            Self::Multi => Resp::SS("OK".into()).into(),
             Self::Xadd { key, id, values } => {
                 match store.set_stream(&key, id, values).await {
                     Ok(id) => Resp::BS(Some(format!("{id}"))).into(),
@@ -342,6 +344,7 @@ impl Command {
                         .to_string();
                     Self::Type { key }
                 }
+                "MULTI" => Self::Multi,
                 "XADD" => {
                     if args.len() < 5 {
                         return Err(RedisError::LackOfArgs {
@@ -773,6 +776,14 @@ mod tests {
         let expected = Command::Incr {
             key: "some_key".into(),
         };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_multi_command() {
+        let args = vec!["MULTI".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Multi;
         assert_eq!(cmd, expected);
     }
 }
