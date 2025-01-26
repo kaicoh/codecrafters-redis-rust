@@ -1,7 +1,4 @@
-use super::{
-    value::{StreamEntry, Value},
-    OutgoingMessage, RedisError, RedisResult, Resp, Store,
-};
+use super::{value::StreamEntry, OutgoingMessage, RedisError, RedisResult, Resp, Store};
 use std::{collections::HashMap, time::Duration};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, oneshot::Sender};
@@ -53,6 +50,9 @@ pub enum Command {
         key: String,
         value: String,
         exp: Option<u64>,
+    },
+    Incr {
+        key: String,
     },
     Type {
         key: String,
@@ -112,18 +112,18 @@ impl Command {
             Self::Ping => Resp::SS("PONG".into()).into(),
             Self::Echo(val) => Resp::BS(Some(val)).into(),
             Self::Get { key } => store
-                .get(&key)
+                .get_string(&key)
                 .await
-                .and_then(|v| match v {
-                    Value::String { value, .. } => Some(value),
-                    _ => None,
-                })
                 .map(|v| Resp::BS(Some(v)))
                 .unwrap_or(Resp::BS(None))
                 .into(),
             Self::Set { key, value, exp } => {
                 store.set_string(&key, value, exp).await;
                 Resp::SS("OK".into()).into()
+            }
+            Self::Incr { key } => {
+                let num = store.increment(&key).await?;
+                Resp::I(num).into()
             }
             Self::Type { key } => store
                 .get(&key)
@@ -327,6 +327,13 @@ impl Command {
                         })
                         .and_then(|v| v.parse::<u64>().ok());
                     Self::Set { key, value, exp }
+                }
+                "INCR" => {
+                    let key = args
+                        .get(1)
+                        .ok_or(RedisError::LackOfArgs { need: 1, got: 0 })?
+                        .to_string();
+                    Self::Incr { key }
                 }
                 "TYPE" => {
                     let key = args
@@ -755,6 +762,16 @@ mod tests {
                 ("stream_key".into(), "0-0".into()),
                 ("other_stream_key".into(), "0-1".into()),
             ],
+        };
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_incr_command() {
+        let args = vec!["INCR".to_string(), "some_key".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Incr {
+            key: "some_key".into(),
         };
         assert_eq!(cmd, expected);
     }

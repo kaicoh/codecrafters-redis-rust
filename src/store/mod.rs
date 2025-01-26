@@ -4,12 +4,12 @@ use super::{
     message::OutgoingMessage,
     rdb::Rdb,
     value::{RedisStream, StreamEntry, StreamEntryId, StreamEntryIdFactor, Value},
-    Config, RedisResult, Resp,
+    Config, RedisError, RedisResult, Resp,
 };
 use replica::{Replica, WaitSignal};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
+use std::{collections::HashMap, time::UNIX_EPOCH};
 use tokio::sync::{
     mpsc::{self, Sender},
     Mutex, MutexGuard,
@@ -37,6 +37,11 @@ impl Store {
         inner.config.port
     }
 
+    pub async fn keys(&self) -> Vec<String> {
+        let inner = self.lock().await;
+        inner.db.keys().map(|v| v.to_string()).collect()
+    }
+
     pub async fn get(&self, key: &str) -> Option<Value> {
         let mut inner = self.lock().await;
         match inner.db.get(key) {
@@ -52,9 +57,11 @@ impl Store {
         }
     }
 
-    pub async fn keys(&self) -> Vec<String> {
-        let inner = self.lock().await;
-        inner.db.keys().map(|v| v.to_string()).collect()
+    pub async fn get_string(&self, key: &str) -> Option<String> {
+        self.get(key).await.and_then(|v| match v {
+            Value::String { value, .. } => Some(value),
+            _ => None,
+        })
     }
 
     pub async fn set_string(&self, key: &str, value: String, exp: Option<u64>) {
@@ -66,6 +73,23 @@ impl Store {
 
         let msg = msg_set_string(key, value, exp);
         self.send_to_replicas(msg).await
+    }
+
+    pub async fn increment(&self, key: &str) -> RedisResult<i64> {
+        let (value, exp) = match self.get(key).await {
+            Some(Value::String { value, exp }) => {
+                let value = (value.parse::<i64>()? + 1).to_string();
+                let exp = exp.map(|time| {
+                    time.duration_since(UNIX_EPOCH)
+                        .expect("SystemTime before UNIX EPOCH!")
+                        .as_millis() as u64
+                });
+                (value, exp)
+            }
+            _ => ("1".to_string(), None),
+        };
+        self.set_string(key, value.clone(), exp).await;
+        value.parse().map_err(RedisError::from)
     }
 
     pub async fn set_stream(
