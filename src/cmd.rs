@@ -59,6 +59,7 @@ pub enum Command {
     },
     Multi,
     Exec,
+    Discard,
     Xadd {
         key: String,
         id: String,
@@ -119,6 +120,13 @@ impl Command {
                 Resp::A(resps).into()
             } else {
                 Resp::SE("ERR EXEC without MULTI".into()).into()
+            }
+        } else if matches!(self, Self::Discard) {
+            if store.is_queuing(ctx.addr).await {
+                let _ = store.drain_trans(ctx.addr).await;
+                Resp::SS("OK".into()).into()
+            } else {
+                Resp::SE("ERR DISCARD without MULTI".into()).into()
             }
         } else {
             let need_return = self.return_message(ctx.mode);
@@ -389,6 +397,7 @@ impl Command {
                 }
                 "MULTI" => Self::Multi,
                 "EXEC" => Self::Exec,
+                "DISCARD" => Self::Discard,
                 "XADD" => {
                     if args.len() < 5 {
                         return Err(RedisError::LackOfArgs {
@@ -486,7 +495,7 @@ impl Command {
     }
 
     async fn need_queue(&self, store: &Arc<Store>, addr: SocketAddr) -> bool {
-        store.is_queuing(addr).await && !matches!(self, Self::Exec)
+        store.is_queuing(addr).await && !matches!(self, Self::Exec | Self::Discard)
     }
 }
 
@@ -840,6 +849,14 @@ mod tests {
         let args = vec!["EXEC".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Exec;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_discard_command() {
+        let args = vec!["DISCARD".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Discard;
         assert_eq!(cmd, expected);
     }
 }
