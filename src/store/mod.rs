@@ -24,6 +24,7 @@ struct Inner {
     config: Config,
     replicas: HashMap<SocketAddr, Replica>,
     ack: usize,
+    stream_subscribers: HashMap<String, Vec<Sender<()>>>,
 }
 
 impl Store {
@@ -85,6 +86,7 @@ impl Store {
 
         let msg = msg_set_stream(key, entry);
         self.send_to_replicas(msg).await;
+        self.notify_subscribers(key).await;
 
         Ok(id)
     }
@@ -224,6 +226,18 @@ impl Store {
         synced as i64
     }
 
+    pub async fn subscribe_stream(&self, key: &str, sender: Sender<()>) {
+        let mut inner = self.lock().await;
+        match inner.stream_subscribers.get_mut(key) {
+            Some(senders) => {
+                senders.push(sender);
+            }
+            None => {
+                inner.stream_subscribers.insert(key.into(), vec![sender]);
+            }
+        }
+    }
+
     async fn lock(&self) -> MutexGuard<'_, Inner> {
         self.0.lock().await
     }
@@ -249,6 +263,25 @@ impl Store {
             }
         }
     }
+
+    async fn notify_subscribers(&self, key: &str) {
+        let subscribers = {
+            let mut inner = self.lock().await;
+            match inner.stream_subscribers.get_mut(key) {
+                Some(values) => {
+                    let mut senders: Vec<Sender<()>> = vec![];
+                    senders.append(values);
+                    senders
+                }
+                None => vec![],
+            }
+        };
+        for sender in subscribers {
+            if sender.send(()).await.is_err() {
+                eprintln!("Receiver has been dropped before sending messsage");
+            }
+        }
+    }
 }
 
 impl Inner {
@@ -259,6 +292,7 @@ impl Inner {
             config: config.clone(),
             replicas: HashMap::new(),
             ack: 0,
+            stream_subscribers: HashMap::new(),
         })
     }
 

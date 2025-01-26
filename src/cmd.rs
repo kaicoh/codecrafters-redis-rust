@@ -4,7 +4,7 @@ use super::{
 };
 use std::{collections::HashMap, time::Duration};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::oneshot::Sender;
+use tokio::sync::{mpsc, oneshot::Sender};
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, Copy)]
@@ -146,30 +146,72 @@ impl Command {
                 Resp::from(entries).into()
             }
             Self::Xread { block, stream } => {
-                if let Some(milli) = block {
-                    if let Some(sender) = ctx.sender.take() {
-                        tokio::spawn(async move {
-                            sleep(Duration::from_millis(milli)).await;
+                match block {
+                    Some(0) => {
+                        if let Some(sender) = ctx.sender.take() {
+                            tokio::spawn(async move {
+                                let store_cp = Arc::clone(&store);
+                                let stream_cp = stream.clone();
 
-                            let msg: OutgoingMessage = read_stream(store, stream)
-                                .await
-                                .map(Resp::from)
-                                .unwrap_or(Resp::BS(None))
-                                .into();
+                                let mut msg: Option<OutgoingMessage> = read_stream(store_cp, stream_cp)
+                                    .await
+                                    .map(|v| Resp::from(v).into());
 
-                            if sender.send(msg).is_err() {
-                                eprintln!("Oneshot receiver dropped before sending");
-                            }
-                        });
+                                while msg.is_none() {
+                                    // 1. Ask store to inform after adding any stream entry.
+                                    let (tx, mut rx) = mpsc::channel::<()>(stream.len());
+                                    for (key, _) in stream.iter() {
+                                        let tx = tx.clone();
+                                        store.subscribe_stream(key, tx).await;
+                                    }
+
+                                    // 2. Wait until notification from the store arrives.
+                                    if rx.recv().await.is_none() {
+                                        eprintln!("Mpsc sender dropped before sending");
+                                        return;
+                                    }
+
+                                    // 3. Get stream again.
+                                    let store_cp = Arc::clone(&store);
+                                    let stream_cp = stream.clone();
+
+                                    msg = read_stream(store_cp, stream_cp)
+                                        .await
+                                        .map(|v| Resp::from(v).into());
+                                }
+
+                                if sender.send(msg.unwrap()).is_err() {
+                                    eprintln!("Oneshot receiver dropped before sending");
+                                }
+                            });
+                        }
+                        OutgoingMessage::empty()
                     }
+                    Some(milli) => {
+                        if let Some(sender) = ctx.sender.take() {
+                            tokio::spawn(async move {
+                                sleep(Duration::from_millis(milli)).await;
 
-                    OutgoingMessage::empty()
-                } else {
-                    read_stream(store, stream)
-                        .await
-                        .map(Resp::from)
-                        .unwrap_or(Resp::BS(None))
-                        .into()
+                                let msg: OutgoingMessage = read_stream(store, stream)
+                                    .await
+                                    .map(Resp::from)
+                                    .unwrap_or(Resp::BS(None))
+                                    .into();
+
+                                if sender.send(msg).is_err() {
+                                    eprintln!("Oneshot receiver dropped before sending");
+                                }
+                            });
+                        }
+                        OutgoingMessage::empty()
+                    }
+                    _ => {
+                        read_stream(store, stream)
+                            .await
+                            .map(Resp::from)
+                            .unwrap_or(Resp::BS(None))
+                            .into()
+                    }
                 }
             }
             Self::ConfigGet(key) => {
@@ -646,7 +688,7 @@ mod tests {
     fn it_parses_xread_command() {
         let args = vec![
             "XREAD".to_string(),
-            "stream".to_string(),
+            "streams".to_string(),
             "stream_key".to_string(),
             "1526985054069".to_string(),
         ];
@@ -659,7 +701,7 @@ mod tests {
 
         let args = vec![
             "XREAD".to_string(),
-            "stream".to_string(),
+            "streams".to_string(),
             "stream_key".to_string(),
             "other_stream_key".to_string(),
             "0-0".to_string(),
@@ -679,7 +721,7 @@ mod tests {
             "XREAD".to_string(),
             "block".to_string(),
             "1000".to_string(),
-            "stream".to_string(),
+            "streams".to_string(),
             "stream_key".to_string(),
             "other_stream_key".to_string(),
             "0-0".to_string(),
@@ -697,7 +739,7 @@ mod tests {
 
         let args = vec![
             "XREAD".to_string(),
-            "stream".to_string(),
+            "streams".to_string(),
             "stream_key".to_string(),
             "other_stream_key".to_string(),
             "0-0".to_string(),
