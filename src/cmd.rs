@@ -95,10 +95,15 @@ impl Command {
     }
 
     pub async fn execute(self, store: Arc<Store>, mut ctx: Context) {
-        let msg = self.run(store, &mut ctx).await.unwrap_or_else(|err| {
-            eprintln!("Failed to run command. {err}");
-            Resp::from(err).into()
-        });
+        let msg = if self.need_queue(&store, ctx.addr).await {
+            store.queue(ctx.addr, self).await;
+            Resp::SS("QUEUED".into()).into()
+        } else {
+            self.run(store, &mut ctx).await.unwrap_or_else(|err| {
+                eprintln!("Failed to run command. {err}");
+                Resp::from(err).into()
+            })
+        };
 
         if let Some(sender) = ctx.sender {
             if sender.send(msg).is_err() {
@@ -452,6 +457,10 @@ impl Command {
         } else {
             true
         }
+    }
+
+    async fn need_queue(&self, store: &Arc<Store>, addr: SocketAddr) -> bool {
+        store.is_queuing(addr).await && !matches!(self, Self::Exec)
     }
 }
 

@@ -109,6 +109,13 @@ impl Store {
         self.lock().await.transactions.contains_key(&addr)
     }
 
+    pub async fn queue(&self, addr: SocketAddr, cmd: Command) {
+        let mut inner = self.lock().await;
+        if let Some(transaction) = inner.transactions.get_mut(&addr) {
+            transaction.push(cmd);
+        }
+    }
+
     pub async fn exec_transactions(&self, addr: SocketAddr) {
         let mut inner = self.lock().await;
         inner.transactions.remove(&addr);
