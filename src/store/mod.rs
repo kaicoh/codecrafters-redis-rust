@@ -1,10 +1,11 @@
 mod replica;
+mod transaction;
 
 use super::{
     message::OutgoingMessage,
     rdb::Rdb,
     value::{RedisStream, StreamEntry, StreamEntryId, StreamEntryIdFactor, Value},
-    Config, RedisError, RedisResult, Resp,
+    Command, Config, RedisError, RedisResult, Resp,
 };
 use replica::{Replica, WaitSignal};
 use std::net::SocketAddr;
@@ -14,6 +15,7 @@ use tokio::sync::{
     mpsc::{self, Sender},
     Mutex, MutexGuard,
 };
+use transaction::Transaction;
 
 #[derive(Debug)]
 pub struct Store(Mutex<Inner>);
@@ -25,6 +27,7 @@ struct Inner {
     replicas: HashMap<SocketAddr, Replica>,
     ack: usize,
     stream_subscribers: HashMap<String, Vec<Sender<()>>>,
+    transactions: HashMap<SocketAddr, Transaction>,
 }
 
 impl Store {
@@ -95,6 +98,15 @@ impl Store {
         };
         self.set_string(key, value.clone(), exp).await;
         value.parse().map_err(RedisError::from)
+    }
+
+    pub async fn start_queuing(&self, addr: SocketAddr) {
+        let mut inner = self.lock().await;
+        inner.transactions.insert(addr, Transaction::new());
+    }
+
+    pub async fn is_queuing(&self, addr: SocketAddr) -> bool {
+        self.lock().await.transactions.contains_key(&addr)
     }
 
     pub async fn set_stream(
@@ -343,6 +355,7 @@ impl Inner {
             replicas: HashMap::new(),
             ack: 0,
             stream_subscribers: HashMap::new(),
+            transactions: HashMap::new(),
         })
     }
 

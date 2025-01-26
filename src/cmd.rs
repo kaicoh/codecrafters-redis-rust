@@ -39,7 +39,7 @@ pub enum CommandMode {
     Sync,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Ping,
     Echo(String),
@@ -58,6 +58,7 @@ pub enum Command {
         key: String,
     },
     Multi,
+    Exec,
     Xadd {
         key: String,
         id: String,
@@ -132,7 +133,17 @@ impl Command {
                 .map(|value| Resp::SS(value.type_name().into()))
                 .unwrap_or(Resp::SS("none".into()))
                 .into(),
-            Self::Multi => Resp::SS("OK".into()).into(),
+            Self::Multi => {
+                store.start_queuing(ctx.addr).await;
+                Resp::SS("OK".into()).into()
+            },
+            Self::Exec => {
+                if store.is_queuing(ctx.addr).await {
+                    OutgoingMessage::empty()
+                } else {
+                    Resp::SE("ERR EXEC without MULTI".into()).into()
+                }
+            }
             Self::Xadd { key, id, values } => {
                 match store.set_stream(&key, id, values).await {
                     Ok(id) => Resp::BS(Some(format!("{id}"))).into(),
@@ -345,6 +356,7 @@ impl Command {
                     Self::Type { key }
                 }
                 "MULTI" => Self::Multi,
+                "EXEC" => Self::Exec,
                 "XADD" => {
                     if args.len() < 5 {
                         return Err(RedisError::LackOfArgs {
@@ -784,6 +796,14 @@ mod tests {
         let args = vec!["MULTI".to_string()];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Multi;
+        assert_eq!(cmd, expected);
+    }
+
+    #[test]
+    fn it_parses_exec_command() {
+        let args = vec!["EXEC".to_string()];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Exec;
         assert_eq!(cmd, expected);
     }
 }
