@@ -109,6 +109,11 @@ impl Store {
         self.lock().await.transactions.contains_key(&addr)
     }
 
+    pub async fn exec_transactions(&self, addr: SocketAddr) {
+        let mut inner = self.lock().await;
+        inner.transactions.remove(&addr);
+    }
+
     pub async fn set_stream(
         &self,
         key: &str,

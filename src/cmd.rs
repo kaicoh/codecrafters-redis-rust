@@ -139,7 +139,8 @@ impl Command {
             },
             Self::Exec => {
                 if store.is_queuing(ctx.addr).await {
-                    OutgoingMessage::empty()
+                    store.exec_transactions(ctx.addr).await;
+                    Resp::A(vec![]).into()
                 } else {
                     Resp::SE("ERR EXEC without MULTI".into()).into()
                 }
