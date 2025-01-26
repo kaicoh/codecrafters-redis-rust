@@ -146,6 +146,7 @@ impl Command {
                 Resp::from(entries).into()
             }
             Self::Xread { block, stream } => {
+                let stream = store.parse_find_stream_args(stream).await?;
                 match block {
                     Some(0) => {
                         if let Some(sender) = ctx.sender.take() {

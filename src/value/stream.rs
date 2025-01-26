@@ -39,15 +39,15 @@ impl RedisStream {
         Ok(self.0.iter().find(move |e| start < e.id()))
     }
 
+    pub fn last_id(&self) -> Option<StreamEntryId> {
+        self.0.last().map(StreamEntry::id)
+    }
+
     fn valid_id(&self, id: StreamEntryId) -> bool {
         match self.last_id() {
             Some(last_id) => last_id < id,
             None => true,
         }
-    }
-
-    fn last_id(&self) -> Option<StreamEntryId> {
-        self.0.last().map(StreamEntry::id)
     }
 }
 

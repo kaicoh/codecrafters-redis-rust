@@ -113,6 +113,27 @@ impl Store {
         self.get_stream(key).await?.find(start).map(|v| v.cloned())
     }
 
+    pub async fn parse_find_stream_args(
+        &self,
+        args: Vec<(String, String)>,
+    ) -> RedisResult<Vec<(String, String)>> {
+        let mut responses: Vec<(String, String)> = vec![];
+        for (key, start) in args {
+            if start.as_str() == "$" {
+                let start = self
+                    .get_stream(&key)
+                    .await?
+                    .last_id()
+                    .map(|v| format!("{v}"))
+                    .unwrap_or("0-0".to_string());
+                responses.push((key, start));
+            } else {
+                responses.push((key, start));
+            }
+        }
+        Ok(responses)
+    }
+
     pub async fn rdb_dir(&self) -> Option<String> {
         let inner = self.lock().await;
         inner.config.dir.clone()
