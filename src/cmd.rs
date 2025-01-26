@@ -2,18 +2,37 @@ use super::{
     value::{StreamEntry, Value},
     OutgoingMessage, RedisError, RedisResult, Resp, Store,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use std::{net::SocketAddr, sync::Arc};
+use tokio::sync::oneshot::Sender;
+use tokio::time::sleep;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Context {
+#[derive(Debug, Clone, Copy)]
+pub struct ContextBuilder {
     mode: CommandMode,
     addr: SocketAddr,
 }
 
+impl ContextBuilder {
+    pub fn build(&self, sender: Sender<OutgoingMessage>) -> Context {
+        Context {
+            mode: self.mode,
+            addr: self.addr,
+            sender: Some(sender),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Context {
+    mode: CommandMode,
+    addr: SocketAddr,
+    sender: Option<Sender<OutgoingMessage>>,
+}
+
 impl Context {
-    pub fn new(mode: CommandMode, addr: SocketAddr) -> Self {
-        Self { mode, addr }
+    pub fn builder(mode: CommandMode, addr: SocketAddr) -> ContextBuilder {
+        ContextBuilder { mode, addr }
     }
 }
 
@@ -49,9 +68,8 @@ pub enum Command {
         end: String,
     },
     Xread {
-        kind: String,
-        // stream-key and id pairs
-        keys: Vec<(String, String)>,
+        block: Option<u64>,
+        stream: Vec<(String, String)>,
     },
     ConfigGet(String),
     Keys,
@@ -74,9 +92,21 @@ impl Command {
         Self::from_args(args)
     }
 
-    pub async fn run(self, store: Arc<Store>, ctx: Context) -> RedisResult<OutgoingMessage> {
-        let Context { mode, addr } = ctx;
-        let should_return = self.return_message(mode);
+    pub async fn execute(self, store: Arc<Store>, mut ctx: Context) {
+        let msg = self.run(store, &mut ctx).await.unwrap_or_else(|err| {
+            eprintln!("Failed to run command. {err}");
+            Resp::from(err).into()
+        });
+
+        if let Some(sender) = ctx.sender {
+            if sender.send(msg).is_err() {
+                eprintln!("Oneshot receiver dropped before sending message!");
+            }
+        }
+    }
+
+    pub async fn run(self, store: Arc<Store>, ctx: &mut Context) -> RedisResult<OutgoingMessage> {
+        let should_return = self.return_message(ctx.mode);
 
         let message: OutgoingMessage = match self {
             Self::Ping => Resp::SS("PONG".into()).into(),
@@ -115,13 +145,32 @@ impl Command {
                 let entries = store.query_stream(&key, start, end).await?;
                 Resp::from(entries).into()
             }
-            Self::Xread { keys, .. } => {
-                let mut pairs: Vec<(String, Option<StreamEntry>)> = vec![];
-                for (key, start) in keys {
-                    let entry = store.find_stream(&key, start).await?;
-                    pairs.push((key, entry));
+            Self::Xread { block, stream } => {
+                if let Some(milli) = block {
+                    if let Some(sender) = ctx.sender.take() {
+                        tokio::spawn(async move {
+                            sleep(Duration::from_millis(milli)).await;
+
+                            let msg: OutgoingMessage = read_stream(store, stream)
+                                .await
+                                .map(Resp::from)
+                                .unwrap_or(Resp::BS(None))
+                                .into();
+
+                            if sender.send(msg).is_err() {
+                                eprintln!("Oneshot receiver dropped before sending");
+                            }
+                        });
+                    }
+
+                    OutgoingMessage::empty()
+                } else {
+                    read_stream(store, stream)
+                        .await
+                        .map(Resp::from)
+                        .unwrap_or(Resp::BS(None))
+                        .into()
                 }
-                Resp::from(pairs).into()
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
@@ -167,7 +216,7 @@ impl Command {
                 .into(),
                 "ACK" => {
                     let ack = value.parse::<usize>()?;
-                    store.receive_replica_ack(addr, ack).await;
+                    store.receive_replica_ack(ctx.addr, ack).await;
                     OutgoingMessage::empty()
                 }
                 _ => Resp::SS("OK".into()).into(),
@@ -280,21 +329,8 @@ impl Command {
                     Self::Xrange { key, start, end }
                 }
                 "XREAD" => {
-                    if args.len() < 3 {
-                        return Err(RedisError::LackOfArgs {
-                            need: 3,
-                            got: args.len(),
-                        });
-                    }
-
-                    let kind = args
-                        .get(1)
-                        .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
-                        .to_string();
-
-                    let keys = zip_pairs(&args[2..]);
-
-                    Self::Xread { kind, keys }
+                    let (block, stream) = xread_args(&args[1..])?;
+                    Self::Xread { block, stream }
                 }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
@@ -383,13 +419,69 @@ fn into_hashmap(values: &[String]) -> HashMap<String, String> {
     map
 }
 
+type XreadArgs = (Option<u64>, Vec<(String, String)>);
+fn xread_args(values: &[String]) -> RedisResult<XreadArgs> {
+    let stream_pos = arg_starts_at(values, "streams").ok_or(RedisError::from(anyhow::anyhow!(
+        "argument streams is required"
+    )))?;
+    match arg_starts_at(values, "block") {
+        Some(block_pos) if block_pos < stream_pos => {
+            let block = values
+                .get(block_pos)
+                .ok_or(RedisError::from(anyhow::anyhow!(
+                    "Not found block argument value"
+                )))?
+                .parse::<u64>()?;
+            let stream = zip_pairs(&values[stream_pos..]);
+            Ok((Some(block), stream))
+        }
+        Some(block_pos) => {
+            let block = values
+                .get(block_pos)
+                .ok_or(RedisError::from(anyhow::anyhow!(
+                    "Not found block argument value"
+                )))?
+                .parse::<u64>()?;
+            let stream = zip_pairs(&values[stream_pos..(block_pos - 1)]);
+            Ok((Some(block), stream))
+        }
+        None => {
+            let stream = zip_pairs(&values[stream_pos..]);
+            Ok((None, stream))
+        }
+    }
+}
+
+fn arg_starts_at(values: &[String], arg: &str) -> Option<usize> {
+    values.iter().position(|v| v.as_str() == arg).map(|v| v + 1)
+}
+
 fn zip_pairs(values: &[String]) -> Vec<(String, String)> {
-    let center: usize = values.len() / 2;
+    let center = values.len() / 2;
     values[..center]
         .iter()
         .zip(values[center..].iter())
         .map(|(key, id)| (key.into(), id.into()))
         .collect()
+}
+
+async fn read_stream(
+    store: Arc<Store>,
+    pairs: Vec<(String, String)>,
+) -> Option<Vec<(String, StreamEntry)>> {
+    let mut responses: Vec<(String, StreamEntry)> = vec![];
+    for (key, start) in pairs {
+        match store.find_stream(&key, start).await {
+            Ok(Some(entry)) => {
+                responses.push((key, entry));
+            }
+            _ => {
+                eprintln!("No stream found.");
+                return None;
+            }
+        }
+    }
+    Some(responses)
 }
 
 #[cfg(test)]
@@ -560,8 +652,8 @@ mod tests {
         ];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Xread {
-            kind: "stream".into(),
-            keys: vec![("stream_key".into(), "1526985054069".into())],
+            block: None,
+            stream: vec![("stream_key".into(), "1526985054069".into())],
         };
         assert_eq!(cmd, expected);
 
@@ -575,8 +667,48 @@ mod tests {
         ];
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Xread {
-            kind: "stream".into(),
-            keys: vec![
+            block: None,
+            stream: vec![
+                ("stream_key".into(), "0-0".into()),
+                ("other_stream_key".into(), "0-1".into()),
+            ],
+        };
+        assert_eq!(cmd, expected);
+
+        let args = vec![
+            "XREAD".to_string(),
+            "block".to_string(),
+            "1000".to_string(),
+            "stream".to_string(),
+            "stream_key".to_string(),
+            "other_stream_key".to_string(),
+            "0-0".to_string(),
+            "0-1".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xread {
+            block: Some(1000),
+            stream: vec![
+                ("stream_key".into(), "0-0".into()),
+                ("other_stream_key".into(), "0-1".into()),
+            ],
+        };
+        assert_eq!(cmd, expected);
+
+        let args = vec![
+            "XREAD".to_string(),
+            "stream".to_string(),
+            "stream_key".to_string(),
+            "other_stream_key".to_string(),
+            "0-0".to_string(),
+            "0-1".to_string(),
+            "block".to_string(),
+            "1000".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xread {
+            block: Some(1000),
+            stream: vec![
                 ("stream_key".into(), "0-0".into()),
                 ("other_stream_key".into(), "0-1".into()),
             ],

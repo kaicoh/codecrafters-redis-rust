@@ -134,18 +134,14 @@ impl From<Vec<StreamEntry>> for Resp {
     }
 }
 
-impl From<(String, Option<StreamEntry>)> for Resp {
-    fn from((key, entry): (String, Option<StreamEntry>)) -> Self {
-        let entry = match entry {
-            Some(entry) => Resp::from(entry),
-            None => Resp::A(vec![]),
-        };
-        Resp::A(vec![Resp::BS(Some(key)), Resp::A(vec![entry])])
+impl From<(String, StreamEntry)> for Resp {
+    fn from((key, entry): (String, StreamEntry)) -> Self {
+        Resp::A(vec![Resp::BS(Some(key)), Resp::A(vec![Resp::from(entry)])])
     }
 }
 
-impl From<Vec<(String, Option<StreamEntry>)>> for Resp {
-    fn from(values: Vec<(String, Option<StreamEntry>)>) -> Self {
+impl From<Vec<(String, StreamEntry)>> for Resp {
+    fn from(values: Vec<(String, StreamEntry)>) -> Self {
         Resp::A(values.into_iter().map(Resp::from).collect())
     }
 }

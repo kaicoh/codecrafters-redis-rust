@@ -1,8 +1,14 @@
-use super::{Command, CommandMode, Context, IncomingMessage, RedisResult, Resp, Store, BUF_SIZE};
+use super::{
+    Command, CommandMode, Context, IncomingMessage, OutgoingMessage, RedisResult, Resp, Store,
+    BUF_SIZE,
+};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
-use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::{
+    mpsc::{self, Receiver},
+    oneshot,
+};
 
 #[derive(Debug)]
 pub struct Connection {
@@ -18,6 +24,8 @@ impl Connection {
     pub async fn start_streaming(self, store: &Arc<Store>) -> RedisResult<()> {
         let Self { stream, mode } = self;
         let addr = stream.peer_addr()?;
+        let ctx_builder = Context::builder(mode, addr);
+
         let store = Arc::clone(store);
         let (mut rs, mut ws) = stream.into_split();
         let (tx_in, mut rx_in) = mpsc::channel::<IncomingMessage>(100);
@@ -64,8 +72,6 @@ impl Connection {
             eprintln!("Channel closed. Stop reading bytes from {addr}");
         });
 
-        let ctx = Context::new(mode, addr);
-
         tokio::spawn(async move {
             while let Some(msg) = rx_in.recv().await {
                 match msg {
@@ -78,21 +84,29 @@ impl Connection {
                                     store.subscribe(addr, tx_by.clone()).await;
                                 }
 
-                                let msg =
-                                    cmd.run(Arc::clone(&store), ctx)
-                                        .await
-                                        .unwrap_or_else(|err| {
-                                            eprintln!("Failed to run command: {err}");
-                                            Resp::from(err).into()
-                                        });
+                                let tx_by0 = tx_by.clone();
+                                let (tx, rx) = oneshot::channel::<OutgoingMessage>();
 
-                                for bytes in msg.into_iter() {
-                                    if tx_by.send(bytes).await.is_err() {
-                                        eprintln!("Receiver dropped");
-                                        break;
+                                tokio::spawn(async move {
+                                    match rx.await {
+                                        Ok(msg) => {
+                                            for bytes in msg.into_iter() {
+                                                if tx_by0.send(bytes).await.is_err() {
+                                                    eprintln!("Receiver dropped");
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            eprintln!(
+                                                "Oneshot sender dropped before sending message!"
+                                            );
+                                        }
                                     }
-                                }
+                                });
 
+                                let ctx = ctx_builder.build(tx);
+                                cmd.execute(Arc::clone(&store), ctx).await;
                                 store.add_ack_offset(size).await;
                             }
                             Err(err) => {
