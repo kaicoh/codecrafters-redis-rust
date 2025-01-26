@@ -1,4 +1,7 @@
-use super::{value::Value, OutgoingMessage, RedisError, RedisResult, Resp, Store};
+use super::{
+    value::{StreamEntry, Value},
+    OutgoingMessage, RedisError, RedisResult, Resp, Store,
+};
 use std::collections::HashMap;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -47,8 +50,8 @@ pub enum Command {
     },
     Xread {
         kind: String,
-        key: String,
-        start: String,
+        // stream-key and id pairs
+        keys: Vec<(String, String)>,
     },
     ConfigGet(String),
     Keys,
@@ -112,9 +115,13 @@ impl Command {
                 let entries = store.query_stream(&key, start, end).await?;
                 Resp::from(entries).into()
             }
-            Self::Xread { key, start, .. } => {
-                let entry = store.find_stream(&key, start).await?;
-                Resp::from((key, entry)).into()
+            Self::Xread { keys, .. } => {
+                let mut pairs: Vec<(String, Option<StreamEntry>)> = vec![];
+                for (key, start) in keys {
+                    let entry = store.find_stream(&key, start).await?;
+                    pairs.push((key, entry));
+                }
+                Resp::from(pairs).into()
             }
             Self::ConfigGet(key) => {
                 let val = match key.as_str() {
@@ -273,20 +280,21 @@ impl Command {
                     Self::Xrange { key, start, end }
                 }
                 "XREAD" => {
+                    if args.len() < 3 {
+                        return Err(RedisError::LackOfArgs {
+                            need: 3,
+                            got: args.len(),
+                        });
+                    }
+
                     let kind = args
                         .get(1)
                         .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
                         .to_string();
-                    let key = args
-                        .get(2)
-                        .ok_or(RedisError::LackOfArgs { need: 3, got: 0 })?
-                        .to_string();
-                    let start = args
-                        .get(3)
-                        .ok_or(RedisError::LackOfArgs { need: 3, got: 1 })?
-                        .to_string();
 
-                    Self::Xread { kind, key, start }
+                    let keys = zip_pairs(&args[2..]);
+
+                    Self::Xread { kind, keys }
                 }
                 "CONFIG" => match args.get(1) {
                     Some(cmd) if cmd.to_uppercase().as_str() == "GET" => {
@@ -373,6 +381,15 @@ fn into_hashmap(values: &[String]) -> HashMap<String, String> {
     }
 
     map
+}
+
+fn zip_pairs(values: &[String]) -> Vec<(String, String)> {
+    let center: usize = values.len() / 2;
+    values[..center]
+        .iter()
+        .zip(values[center..].iter())
+        .map(|(key, id)| (key.into(), id.into()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -544,8 +561,25 @@ mod tests {
         let cmd = Command::from_args(args).unwrap();
         let expected = Command::Xread {
             kind: "stream".into(),
-            key: "stream_key".into(),
-            start: "1526985054069".into(),
+            keys: vec![("stream_key".into(), "1526985054069".into())],
+        };
+        assert_eq!(cmd, expected);
+
+        let args = vec![
+            "XREAD".to_string(),
+            "stream".to_string(),
+            "stream_key".to_string(),
+            "other_stream_key".to_string(),
+            "0-0".to_string(),
+            "0-1".to_string(),
+        ];
+        let cmd = Command::from_args(args).unwrap();
+        let expected = Command::Xread {
+            kind: "stream".into(),
+            keys: vec![
+                ("stream_key".into(), "0-0".into()),
+                ("other_stream_key".into(), "0-1".into()),
+            ],
         };
         assert_eq!(cmd, expected);
     }

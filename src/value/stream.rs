@@ -140,10 +140,13 @@ impl From<(String, Option<StreamEntry>)> for Resp {
             Some(entry) => Resp::from(entry),
             None => Resp::A(vec![]),
         };
-        Resp::A(vec![Resp::A(vec![
-            Resp::BS(Some(key)),
-            Resp::A(vec![entry]),
-        ])])
+        Resp::A(vec![Resp::BS(Some(key)), Resp::A(vec![entry])])
+    }
+}
+
+impl From<Vec<(String, Option<StreamEntry>)>> for Resp {
+    fn from(values: Vec<(String, Option<StreamEntry>)>) -> Self {
+        Resp::A(values.into_iter().map(Resp::from).collect())
     }
 }
 
